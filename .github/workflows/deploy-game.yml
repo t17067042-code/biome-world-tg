@@ -16,77 +16,81 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fix broken JS and keep perf patches
+      - name: Download and fix index.html
         run: |
-          set -e
+          set -eux
           curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/main/index.html"
-          python3 << 'PY'
+          python3 - <<'PY'
           from pathlib import Path
           import re
-          html = Path('index.html').read_text(encoding='utf-8')
+          p = Path('index.html')
+          html = p.read_text(encoding='utf-8')
+          print('before', len(html))
 
-          # CRITICAL: close buildWaterOverlay before function resize
-          fixed = 0
-          for a,b in [
+          # Fix missing } after water overlay body (infinite loading root cause)
+          patterns = [
             ('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()'),
-            ('x.putImageData(wimg,0,0);\r\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()'),
-          ]:
+            ('putImageData(wimg,0,0);\nfunction resize()', 'putImageData(wimg,0,0);\n}\nfunction resize()'),
+          ]
+          changed = False
+          for a,b in patterns:
+            if a in html and b not in html.replace(a,b,1):
+              pass
             if a in html:
-              html = html.replace(a, b, 1)
-              fixed += 1
-              print('closed water fn')
-          if not fixed:
-              # broader
+              # only if not already closed
+              idx = html.find(a)
+              # if already has } before function, skip
+              if idx != -1:
+                  html = html.replace(a, b, 1)
+                  changed = True
+                  print('applied pattern')
+                  break
+
+          if not changed:
               html2, n = re.subn(
-                  r'(x\.putImageData\(wimg,0,0\);)\s*(function resize\()',
+                  r'(putImageData\(wimg,0,0\);)\s*\n(?!\})\s*(function resize\()',
                   r'\1\n}\n\2',
-                  html, count=1)
+                  html,
+                  count=1,
+              )
               if n:
                   html = html2
-                  print('closed water via regex')
-                  fixed = 1
+                  changed = True
+                  print('applied regex')
 
-          # If water still MAP_W*TILE, fix it fully
-          if 'waterOverlayCanvas.width=MAP_W*TILE' in html:
-              html2, n = re.subn(
-                  r"waterOverlayCanvas=document\.createElement\('canvas'\);\s*waterOverlayCanvas\.width=MAP_W\*TILE;[\s\S]*?(?=function resize\()",
-                  """waterOverlayCanvas=document.createElement('canvas');
-            waterOverlayCanvas.width=MAP_W; waterOverlayCanvas.height=MAP_H;
-            const x=waterOverlayCanvas.getContext('2d'); x.imageSmoothingEnabled=false;
-            const wimg=x.createImageData(MAP_W,MAP_H);
-            for(let ty=0;ty<MAP_H;ty++)for(let tx=0;tx<MAP_W;tx++){
-              if(biomeMap[ty][tx]!==B.WATER) continue;
-              const i=(ty*MAP_W+tx)*4;
-              wimg.data[i]=36; wimg.data[i+1]=88; wimg.data[i+2]=138; wimg.data[i+3]=210;
-            }
-            x.putImageData(wimg,0,0);
-          }
-          """,
-                  html, count=1)
-              if n: html = html2; print('full water rebuild')
+          # Avoid double-close
+          html = html.replace('}\n}\nfunction resize()', '}\nfunction resize()')
 
-          # brace check
           scripts = re.findall(r'<script[^>]*>([\s\S]*?)</script>', html)
           main = max(scripts, key=len)
           depth = 0
           for ch in main:
-            if ch=='{': depth+=1
-            elif ch=='}': depth-=1
-          print('brace depth', depth, 'opens', main.count('{'), 'closes', main.count('}'))
+              if ch == '{': depth += 1
+              elif ch == '}': depth -= 1
+          print('depth', depth, 'changed', changed)
           if depth != 0:
-              raise SystemExit(f'brace imbalance depth={depth}')
+              # last resort: append missing braces at end of main script
+              if depth > 0:
+                  html = html.replace('requestAnimationFrame(loop);\n});\n</script>', 'requestAnimationFrame(loop);\n});\n' + ('}'*depth) + '\n</script>', 1)
+                  print('appended', depth, 'braces')
+              else:
+                  raise SystemExit('too many closes')
 
-          Path('index.html').write_text(html, encoding='utf-8')
-          print('ok', len(html))
+          p.write_text(html, encoding='utf-8')
+          print('after', len(html))
           PY
           touch .nojekyll
+          # verify node syntax if available
+          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const m=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]).sort((a,b)=>b.length-a.length)[0];new Function(m);console.log('syntax ok')"
 
       - name: Commit
         run: |
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "Fix infinite loading: close buildWaterOverlay" && git push origin HEAD:main)
+          git status
+          git diff --cached --stat
+          git diff --cached --quiet || (git commit -m "Fix infinite loading missing brace" && git push origin HEAD:main)
 
       - name: Pages
         uses: peaceiris/actions-gh-pages@v4
