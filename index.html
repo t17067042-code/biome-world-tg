@@ -717,7 +717,7 @@ function generateWorld(){
   for(let y=2;y<MAP_H-2;y++)for(let x=2;x<MAP_W-2;x++){
     const b=biomeMap[y][x], r=rng();
     if(Math.hypot(x*TILE-base.x,y*TILE-base.y)<90) continue;
-    if((b===B.FOREST&&r<0.045)||(b===B.GRASS&&r<0.008)){
+    if((b===B.FOREST&&r<0.20)||(b===B.GRASS&&r<0.035)){
       const dx=x*TILE+(rng()-.5)*18, dy=y*TILE+(rng()-.5)*18;
       const sc=(b===B.FOREST?0.9:0.75)+rng()*.3;
       const variant=(rng()*4)|0;
@@ -1814,7 +1814,7 @@ function enemyWorkerCanWalk(x,y){
   const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
   if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   if(biomeMap[ty][tx]===B.WATER) return false;
-  for(const o of blockers){
+  for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){
     if(o.disabled) continue;
     const rr=(o.r||0)+bodyR;
     const dx=x-o.x,dy=y-o.y;
@@ -1833,7 +1833,7 @@ function enemyWorkerSegmentClear(x1,y1,x2,y2){
 }
 /* v44 navigation: cached occupancy + binary-heap A*. Never run blocker scans inside A*. */
 const __navCache={worker:null,hunter:null,version:0};
-function invalidateNavCache(){__navCache.worker=null;__navCache.hunter=null;}
+function invalidateNavCache(){__navCache.worker=null;__navCache.hunter=null;blockerGridDirty=true;window.__navRebuildAt=performance.now()+100;}
 function enemyPathValid(path, sx=enemyPeasant.x, sy=enemyPeasant.y){
   if(!Array.isArray(path)||!path.length) return false;
   let px=sx, py=sy;
@@ -2574,7 +2574,7 @@ function sheepCanWalk(x,y){
   const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
   if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   if(biomeMap[ty][tx]===B.WATER) return false;
-  for(const o of blockers){
+  for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){
     if(o.disabled) continue;
     const rr=(o.r||0)+bodyR,dx=x-o.x,dy=y-o.y;
     if(dx*dx+dy*dy<rr*rr) return false;
@@ -2724,7 +2724,7 @@ function enemyHunterCanWalk(x,y){
   const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
   if(!Number.isFinite(x)||!Number.isFinite(y)||tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   if(biomeMap[ty][tx]===B.WATER) return false;
-  for(const o of blockers){
+  for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){
     if(o.disabled) continue;
     const rr=(o.r||0)+bodyR,dx=x-o.x,dy=y-o.y;
     if(dx*dx+dy*dy<rr*rr) return false;
@@ -3212,8 +3212,8 @@ function updateRTSProduction(dt){
     }
   }
   clampStockToCapacity();
-  updateBuildingActions();
-  updateRTSStatus();
+  window.__rtsUiT=(window.__rtsUiT||0)+dt;
+  if(window.__rtsUiT>=0.4){window.__rtsUiT=0;if(typeof selectedBuilding!=="undefined"&&selectedBuilding)updateBuildingActions();updateRTSStatus();}
 }
 
 function hitRtsUnit(wx,wy,side){
@@ -3732,12 +3732,12 @@ function update(dt){
   updateAnimals(dt);
 
   /* tree shake decay */
-  for(const d of decorMap){
-    if(d.shakeT>0){
-      d.shakeT-=dt;
-      d.shake=Math.max(0, d.shakeT/0.35);
-      if(d.shakeT<=0) d.shake=0;
+  if(window.__shakingDecor&&window.__shakingDecor.length){
+    const alive=[];
+    for(const d of window.__shakingDecor){
+      if(d.shakeT>0){d.shakeT-=dt;d.shake=Math.max(0,d.shakeT/0.35);if(d.shakeT<=0)d.shake=0;else alive.push(d);}else d.shake=0;
     }
+    window.__shakingDecor=alive;
   }
 
   // ==========================================================
@@ -4134,15 +4134,15 @@ function advanceEnemyArcherAnimation(dt){
 function buildWaterOverlay(){
   if(!groundCanvas)return;
   waterOverlayCanvas=document.createElement('canvas');
-  waterOverlayCanvas.width=MAP_W*TILE; waterOverlayCanvas.height=MAP_H*TILE;
+  waterOverlayCanvas.width=MAP_W; waterOverlayCanvas.height=MAP_H;
   const x=waterOverlayCanvas.getContext('2d'); x.imageSmoothingEnabled=false;
-  if(images.water){
-    for(let ty=0;ty<MAP_H;ty++)for(let tx=0;tx<MAP_W;tx++){
-      if(biomeMap[ty][tx]===B.WATER) x.drawImage(images.water,0,0,64,64,tx*TILE,ty*TILE,TILE,TILE);
-    }
+  const wimg=x.createImageData(MAP_W,MAP_H);
+  for(let ty=0;ty<MAP_H;ty++)for(let tx=0;tx<MAP_W;tx++){
+    if(biomeMap[ty][tx]!==B.WATER) continue;
+    const i=(ty*MAP_W+tx)*4;
+    wimg.data[i]=36; wimg.data[i+1]=88; wimg.data[i+2]=138; wimg.data[i+3]=210;
   }
-}
-
+  x.putImageData(wimg,0,0);
 function resize(){
   const dpr=Math.min(devicePixelRatio,1.5);
   canvas.width=window.innerWidth*dpr;canvas.height=window.innerHeight*dpr;
@@ -4300,23 +4300,19 @@ function render(){
   const W=window.innerWidth, H=window.innerHeight;
   ctx.imageSmoothingEnabled=false;
   ctx.fillStyle='#1a2818'; ctx.fillRect(0,0,W,H);
-  const gW=MAP_W*TILE*cam.zoom, gH=MAP_H*TILE*cam.zoom, origin=W2S(0,0);
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(Math.max(0,origin.x),Math.max(0,origin.y),Math.min(W,origin.x+gW)-Math.max(0,origin.x),Math.min(H,origin.y+gH)-Math.max(0,origin.y));
-  ctx.clip();
-  ctx.imageSmoothingEnabled=true;
-  ctx.drawImage(groundCanvas,origin.x,origin.y,gW,gH);
-  ctx.imageSmoothingEnabled=false;
-  ctx.restore();
-
   const vW=W/cam.zoom, vH=H/cam.zoom, z=cam.zoom, sz=TILE*z;
   const x0=Math.max(0,((cam.x-vW/2)/TILE|0)-1), y0=Math.max(0,((cam.y-vH/2)/TILE|0)-1);
   const x1=Math.min(MAP_W,((cam.x+vW/2)/TILE|0)+2), y1=Math.min(MAP_H,((cam.y+vH/2)/TILE|0)+2);
-
+  const tw=Math.max(1,x1-x0), th=Math.max(1,y1-y0);
+  const dest=W2S(x0*TILE, y0*TILE);
+  const dw=tw*TILE*z, dh=th*TILE*z;
+  if(groundCanvas){
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(groundCanvas, x0, y0, tw, th, dest.x, dest.y, dw, dh);
+  }
   if(waterOverlayCanvas){
-    ctx.globalAlpha=.55;
-    ctx.drawImage(waterOverlayCanvas,origin.x,origin.y,gW,gH);
+    ctx.globalAlpha=.5;
+    ctx.drawImage(waterOverlayCanvas, x0, y0, tw, th, dest.x, dest.y, dw, dh);
     ctx.globalAlpha=1;
   }
 
@@ -4390,10 +4386,12 @@ function render(){
   }
 
   const drawList=[];
+  let decorDrawn=0;const DECOR_DRAW_CAP=550;
   for(const d of decorMap){
     if(d.hidden) continue;
     if(d.x<L||d.x>R||d.y<T||d.y>Btm) continue;
     drawList.push({y:d.y,d});
+    if(++decorDrawn>=DECOR_DRAW_CAP) break;
   }
   drawList.push({y:player.y,player:true});
   drawList.push({y:playerHunter.y,playerHunter:true});
