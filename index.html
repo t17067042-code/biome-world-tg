@@ -4143,6 +4143,7 @@ function buildWaterOverlay(){
     wimg.data[i]=36; wimg.data[i+1]=88; wimg.data[i+2]=138; wimg.data[i+3]=210;
   }
   x.putImageData(wimg,0,0);
+}
 function resize(){
   const dpr=Math.min(devicePixelRatio,1.5);
   canvas.width=window.innerWidth*dpr;canvas.height=window.innerHeight*dpr;
