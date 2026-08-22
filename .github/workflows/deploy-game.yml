@@ -3,13 +3,12 @@ name: Deploy Biome World
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/deploy-game.yml'
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   deploy:
@@ -20,49 +19,28 @@ jobs:
       - name: Download game HTML
         run: |
           set -e
-          curl -fsSL -o index.html "https://litter.catbox.moe/k233i0.html"
-          # ensure Telegram WebApp script is present
-          if ! grep -q 'telegram-web-app.js' index.html; then
-            python3 - <<'PY'
-from pathlib import Path
-p = Path('index.html')
-html = p.read_text(encoding='utf-8')
-inject = '''<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script>
-(function(){
-  try {
-    var tg = window.Telegram && window.Telegram.WebApp;
-    if (!tg) return;
-    tg.ready();
-    tg.expand();
-    if (tg.disableVerticalSwipes) tg.disableVerticalSwipes();
-  } catch (e) {}
-})();
-</script>
-'''
-html = html.replace('<title>Biome World</title>', '<title>Biome World</title>\\n' + inject, 1)
-p.write_text(html, encoding='utf-8')
-PY
-          fi
+          curl -fsSL --retry 5 -o index.html "https://litter.catbox.moe/k233i0.html"
+          test -s index.html
           wc -c index.html
-          head -c 200 index.html
+          grep -q 'Biome World' index.html
+          touch .nojekyll
 
-      - name: Commit game to main
+      - name: Commit to main
         run: |
           git config user.name "biome-deploy-bot"
           git config user.email "biome-deploy@users.noreply.github.com"
-          git add index.html
-          git diff --cached --quiet && echo "No changes" || git commit -m "Deploy Biome World game HTML"
-          git push origin main
+          git add index.html .nojekyll
+          if git diff --cached --quiet; then
+            echo "No content changes"
+          else
+            git commit -m "Add Biome World game HTML"
+            git push origin HEAD:main
+          fi
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: .
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
+          force_orphan: true
+          enable_jekyll: false
