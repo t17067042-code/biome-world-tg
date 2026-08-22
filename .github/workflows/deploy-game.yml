@@ -16,23 +16,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Patch game for FPS (keep big map + forests)
+      - name: Fix broken JS and keep perf patches
         run: |
           set -e
-          curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/gh-pages/index.html" || \
-            curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/main/index.html"
+          curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/main/index.html"
           python3 << 'PY'
           from pathlib import Path
           import re
           html = Path('index.html').read_text(encoding='utf-8')
-          print('in', len(html))
 
-          # --- Water: never full-res ---
-          html2, n = re.subn(
-              r"waterOverlayCanvas=document\.createElement\('canvas'\);\s*"
-              r"waterOverlayCanvas\.width=MAP_W\*TILE;\s*waterOverlayCanvas\.height=MAP_H\*TILE;[\s\S]*?"
-              r"(?=function resize\()",
-              """waterOverlayCanvas=document.createElement('canvas');
+          # CRITICAL: close buildWaterOverlay before function resize
+          fixed = 0
+          for a,b in [
+            ('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()'),
+            ('x.putImageData(wimg,0,0);\r\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()'),
+          ]:
+            if a in html:
+              html = html.replace(a, b, 1)
+              fixed += 1
+              print('closed water fn')
+          if not fixed:
+              # broader
+              html2, n = re.subn(
+                  r'(x\.putImageData\(wimg,0,0\);)\s*(function resize\()',
+                  r'\1\n}\n\2',
+                  html, count=1)
+              if n:
+                  html = html2
+                  print('closed water via regex')
+                  fixed = 1
+
+          # If water still MAP_W*TILE, fix it fully
+          if 'waterOverlayCanvas.width=MAP_W*TILE' in html:
+              html2, n = re.subn(
+                  r"waterOverlayCanvas=document\.createElement\('canvas'\);\s*waterOverlayCanvas\.width=MAP_W\*TILE;[\s\S]*?(?=function resize\()",
+                  """waterOverlayCanvas=document.createElement('canvas');
             waterOverlayCanvas.width=MAP_W; waterOverlayCanvas.height=MAP_H;
             const x=waterOverlayCanvas.getContext('2d'); x.imageSmoothingEnabled=false;
             const wimg=x.createImageData(MAP_W,MAP_H);
@@ -42,149 +60,35 @@ jobs:
               wimg.data[i]=36; wimg.data[i+1]=88; wimg.data[i+2]=138; wimg.data[i+3]=210;
             }
             x.putImageData(wimg,0,0);
+          }
           """,
-              html, count=1)
-          if n: html=html2; print('water fixed', n)
+                  html, count=1)
+              if n: html = html2; print('full water rebuild')
 
-          # --- Render: viewport only ---
-          html2, n = re.subn(
-              r"ctx\.fillStyle='#1a2818'; ctx\.fillRect\(0,0,W,H\);\s*"
-              r"const gW=MAP_W\*TILE\*cam\.zoom, gH=MAP_H\*TILE\*cam\.zoom, origin=W2S\(0,0\);[\s\S]*?"
-              r"if\(waterOverlayCanvas\)\{[\s\S]*?ctx\.globalAlpha=1;\s*\}",
-              """ctx.fillStyle='#1a2818'; ctx.fillRect(0,0,W,H);
-            const vW=W/cam.zoom, vH=H/cam.zoom, z=cam.zoom, sz=TILE*z;
-            const x0=Math.max(0,((cam.x-vW/2)/TILE|0)-1), y0=Math.max(0,((cam.y-vH/2)/TILE|0)-1);
-            const x1=Math.min(MAP_W,((cam.x+vW/2)/TILE|0)+2), y1=Math.min(MAP_H,((cam.y+vH/2)/TILE|0)+2);
-            const tw=Math.max(1,x1-x0), th=Math.max(1,y1-y0);
-            const dest=W2S(x0*TILE, y0*TILE);
-            const dw=tw*TILE*z, dh=th*TILE*z;
-            if(groundCanvas){
-              ctx.imageSmoothingEnabled=false;
-              ctx.drawImage(groundCanvas, x0, y0, tw, th, dest.x, dest.y, dw, dh);
-            }
-            if(waterOverlayCanvas){
-              ctx.globalAlpha=.5;
-              ctx.drawImage(waterOverlayCanvas, x0, y0, tw, th, dest.x, dest.y, dw, dh);
-              ctx.globalAlpha=1;
-            }""",
-              html, count=1)
-          if n: html=html2; print('render viewport', n)
-
-          # Remove duplicate vW declarations if any (render already sets them)
-          # Fix double const vW after our replace - original might still declare vW later
-          html = html.replace(
-              "const vW=W/cam.zoom, vH=H/cam.zoom, z=cam.zoom, sz=TILE*z;\n  const x0=Math.max(0,((cam.x-vW/2)/TILE|0)-1), y0=Math.max(0,((cam.y-vH/2)/TILE|0)-1);\n  const x1=Math.min(MAP_W,((cam.x+vW/2)/TILE|0)+2), y1=Math.min(MAP_H,((cam.y+vH/2)/TILE|0)+2);\n\n  drawBuildings",
-              "drawBuildings", 1)
-
-          # --- Spatial grid + canWalk ---
-          if 'function blockersNear' not in html:
-              inject = '''
-          const BLOCK_GRID_CELL=96;
-          let blockerGrid=new Map();
-          let blockerGridDirty=true;
-          function rebuildBlockerGrid(){
-            blockerGrid.clear();
-            for(const o of blockers){
-              if(o.disabled) continue;
-              const r=o.r||0;
-              const x0=Math.floor((o.x-r)/BLOCK_GRID_CELL), x1=Math.floor((o.x+r)/BLOCK_GRID_CELL);
-              const y0=Math.floor((o.y-r)/BLOCK_GRID_CELL), y1=Math.floor((o.y+r)/BLOCK_GRID_CELL);
-              for(let gy=y0;gy<=y1;gy++) for(let gx=x0;gx<=x1;gx++){
-                const k=(gx<<16)^(gy&0xffff);
-                let arr=blockerGrid.get(k); if(!arr){arr=[]; blockerGrid.set(k,arr);}
-                arr.push(o);
-              }
-            }
-            blockerGridDirty=false;
-          }
-          function ensureBlockerGrid(){ if(blockerGridDirty) rebuildBlockerGrid(); }
-          function blockersNear(wx,wy,extra=0){
-            ensureBlockerGrid();
-            const out=[], seen=new Set();
-            const reach=48+extra;
-            const x0=Math.floor((wx-reach)/BLOCK_GRID_CELL), x1=Math.floor((wx+reach)/BLOCK_GRID_CELL);
-            const y0=Math.floor((wy-reach)/BLOCK_GRID_CELL), y1=Math.floor((wy+reach)/BLOCK_GRID_CELL);
-            for(let gy=y0;gy<=y1;gy++) for(let gx=x0;gx<=x1;gx++){
-              const arr=blockerGrid.get((gx<<16)^(gy&0xffff));
-              if(!arr) continue;
-              for(const o of arr){ if(!seen.has(o)){ seen.add(o); out.push(o); } }
-            }
-            return out;
-          }
-          '''
-              html = html.replace('function canWalk(wx,wy){', inject + '\nfunction canWalk(wx,wy){', 1)
-              print('injected blockersNear')
-
-          # Force all canWalk-style loops to blockersNear
-          for fname in ['canWalk', 'enemyWorkerCanWalk', 'sheepCanWalk', 'enemyHunterCanWalk']:
-              i = html.find(f'function {fname}')
-              if i < 0: continue
-              j = html.find('\nfunction ', i+12)
-              block = html[i:j]
-              if 'for(const o of blockers){' in block:
-                  block2 = block.replace('for(const o of blockers){', 'for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){', 1)
-                  if fname == 'canWalk':
-                      block2 = block.replace('for(const o of blockers){', 'for(const o of blockersNear(wx,wy,24)){', 1)
-                  html = html[:i] + block2 + html[j:]
-                  print('patched', fname)
-
-          # invalidateNav also dirties grid
-          html = html.replace(
-              'function invalidateNavCache(){__navCache.worker=null;__navCache.hunter=null;}',
-              'function invalidateNavCache(){__navCache.worker=null;__navCache.hunter=null;blockerGridDirty=true;window.__navRebuildAt=performance.now()+100;}',
-              1)
-          if 'blockerGridDirty=true' not in html[html.find('function invalidateNavCache'):html.find('function invalidateNavCache')+200]:
-              html = html.replace(
-                  'function invalidateNavCache(){__navCache.worker=null;__navCache.hunter=null;blockerGridDirty=true;}',
-                  'function invalidateNavCache(){__navCache.worker=null;__navCache.hunter=null;blockerGridDirty=true;window.__navRebuildAt=performance.now()+100;}',
-                  1)
-
-          # DOM throttle
-          if '__rtsUiT' not in html:
-              html = html.replace(
-                  '  clampStockToCapacity();\n  updateBuildingActions();\n  updateRTSStatus();\n}',
-                  '  clampStockToCapacity();\n  window.__rtsUiT=(window.__rtsUiT||0)+dt;\n  if(window.__rtsUiT>=0.4){window.__rtsUiT=0;if(typeof selectedBuilding!=="undefined"&&selectedBuilding)updateBuildingActions();updateRTSStatus();}\n}',
-                  1)
-              print('dom throttle')
-
-          # Decor shake list
-          old = '''  for(const d of decorMap){\n    if(d.shakeT>0){\n      d.shakeT-=dt;\n      d.shake=Math.max(0, d.shakeT/0.35);\n      if(d.shakeT<=0) d.shake=0;\n    }\n  }'''
-          new = '''  if(window.__shakingDecor&&window.__shakingDecor.length){\n    const alive=[];\n    for(const d of window.__shakingDecor){\n      if(d.shakeT>0){d.shakeT-=dt;d.shake=Math.max(0,d.shakeT/0.35);if(d.shakeT<=0)d.shake=0;else alive.push(d);}else d.shake=0;\n    }\n    window.__shakingDecor=alive;\n  }'''
-          if old in html:
-              html = html.replace(old, new, 1)
-              print('shake opt')
-
-          # Dense forests KEEP (user request)
-          html = html.replace('if((b===B.FOREST&&r<0.045)||(b===B.GRASS&&r<0.008)){', 'if((b===B.FOREST&&r<0.20)||(b===B.GRASS&&r<0.035)){')
-          html = html.replace('if((b===B.FOREST&&r<0.08)||(b===B.GRASS&&r<0.015)){', 'if((b===B.FOREST&&r<0.20)||(b===B.GRASS&&r<0.035)){')
-          html = html.replace('if((b===B.FOREST&&r<0.22)||(b===B.GRASS&&r<0.04)){', 'if((b===B.FOREST&&r<0.20)||(b===B.GRASS&&r<0.035)){')
-
-          # Fix extra brace
-          html = html.replace('return c;\n}\n}\nfunction __navCellFree', 'return c;\n}\nfunction __navCellFree')
-
-          # Soft draw cap for safety (viewport is main filter)
-          if 'DECOR_DRAW_CAP' not in html:
-              html = html.replace(
-                  'const drawList=[];\n  for(const d of decorMap){\n    if(d.hidden) continue;\n    if(d.x<L||d.x>R||d.y<T||d.y>Btm) continue;\n    drawList.push({y:d.y,d});\n  }',
-                  'const drawList=[];\n  let decorDrawn=0;const DECOR_DRAW_CAP=550;\n  for(const d of decorMap){\n    if(d.hidden) continue;\n    if(d.x<L||d.x>R||d.y<T||d.y>Btm) continue;\n    drawList.push({y:d.y,d});\n    if(++decorDrawn>=DECOR_DRAW_CAP) break;\n  }',
-                  1)
-              print('decor cap')
+          # brace check
+          scripts = re.findall(r'<script[^>]*>([\s\S]*?)</script>', html)
+          main = max(scripts, key=len)
+          depth = 0
+          for ch in main:
+            if ch=='{': depth+=1
+            elif ch=='}': depth-=1
+          print('brace depth', depth, 'opens', main.count('{'), 'closes', main.count('}'))
+          if depth != 0:
+              raise SystemExit(f'brace imbalance depth={depth}')
 
           Path('index.html').write_text(html, encoding='utf-8')
-          print('out', len(html))
-          assert 'MAP_W*TILE' not in html[html.find('waterOverlayCanvas'):html.find('waterOverlayCanvas')+80] or 'width=MAP_W;' in html
+          print('ok', len(html))
           PY
           touch .nojekyll
-          wc -c index.html
 
-      - name: Commit main
+      - name: Commit
         run: |
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "FPS: viewport+water+spatial, keep forests" && git push origin HEAD:main)
+          git diff --cached --quiet || (git commit -m "Fix infinite loading: close buildWaterOverlay" && git push origin HEAD:main)
 
-      - name: gh-pages
+      - name: Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
