@@ -15,19 +15,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download game HTML
+
+      - name: Fetch previous full game and apply perf patches
         run: |
           set -e
-          curl -fsSL --retry 5 -o index.html "https://litter.catbox.moe/dqlhrf.html"
+          curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/gh-pages/index.html"
           test -s index.html
-          grep -q 'MAP_W=200' index.html
+          python3 << 'PY'
+          from pathlib import Path
+          html = Path('index.html').read_text(encoding='utf-8')
+          reps = [
+            ('if((b===B.FOREST&&r<0.22)||(b===B.GRASS&&r<0.04)){', 'if((b===B.FOREST&&r<0.045)||(b===B.GRASS&&r<0.008)){'),
+            ('if((b===B.FOREST&&r<0.08)||(b===B.GRASS&&r<0.015)){', 'if((b===B.FOREST&&r<0.045)||(b===B.GRASS&&r<0.008)){'),
+            ('else if((b===B.GRASS||b===B.FOREST)&&r<0.03){', 'else if((b===B.GRASS||b===B.FOREST)&&r<0.006){'),
+            ('else if((b===B.GRASS||b===B.FOREST)&&r<0.012){', 'else if((b===B.GRASS||b===B.FOREST)&&r<0.006){'),
+            ('if(b===B.ROCK&&r<0.12){', 'if(b===B.ROCK&&r<0.03){'),
+            ('if(b===B.ROCK&&r<0.05){', 'if(b===B.ROCK&&r<0.03){'),
+            ('for(let i=0;i<400;i++){', 'for(let i=0;i<100;i++){'),
+            ('for(let i=0;i<180;i++){', 'for(let i=0;i<100;i++){'),
+            ('placeRandomSheep(16);', 'placeRandomSheep(10);'),
+            ('placeRandomSheep(8);', 'placeRandomSheep(10);'),
+            ('enemyWorkerManager={thinkT:0,interval:.65,targets:new Map(),version:0};', 'enemyWorkerManager={thinkT:0,interval:1.1,targets:new Map(),version:0};'),
+            ('  const c={key,blocked};__navCache[kind]=c;return c;\n}\n}\nfunction __navCellFree', '  const c={key,blocked};__navCache[kind]=c;return c;\n}\nfunction __navCellFree'),
+          ]
+          for a,b in reps:
+            if a in html:
+              html = html.replace(a, b)
+              print('applied', a[:50])
+            else:
+              print('skip', a[:50])
+          # Inject spatial canWalk helpers if missing
+          if 'function blockersNear' not in html and 'function canWalk(wx,wy){' in html:
+            old = '''function canWalk(wx,wy){\n  const tx=Math.floor(wx/TILE),ty=Math.floor(wy/TILE);\n  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;\n  if(biomeMap[ty][tx]===B.WATER) return false;\n  for(const o of blockers){\n    if(o.disabled) continue;\n    const dx=wx-o.x,dy=wy-o.y;\n    if(dx*dx+dy*dy<o.r*o.r) return false;\n  }\n  return true;\n}'''
+            new = '''const BLOCK_GRID_CELL=96;\nlet blockerGrid=new Map();\nlet blockerGridDirty=true;\nfunction rebuildBlockerGrid(){\n  blockerGrid.clear();\n  for(const o of blockers){\n    if(o.disabled) continue;\n    const r=o.r||0;\n    const x0=Math.floor((o.x-r)/BLOCK_GRID_CELL), x1=Math.floor((o.x+r)/BLOCK_GRID_CELL);\n    const y0=Math.floor((o.y-r)/BLOCK_GRID_CELL), y1=Math.floor((o.y+r)/BLOCK_GRID_CELL);\n    for(let gy=y0;gy<=y1;gy++) for(let gx=x0;gx<=x1;gx++){\n      const k=(gx<<16)^(gy&0xffff);\n      let arr=blockerGrid.get(k); if(!arr){arr=[]; blockerGrid.set(k,arr);}\n      arr.push(o);\n    }\n  }\n  blockerGridDirty=false;\n}\nfunction ensureBlockerGrid(){ if(blockerGridDirty) rebuildBlockerGrid(); }\nfunction blockersNear(wx,wy,extra=0){\n  ensureBlockerGrid();\n  const out=[], seen=new Set();\n  const reach=48+extra;\n  const x0=Math.floor((wx-reach)/BLOCK_GRID_CELL), x1=Math.floor((wx+reach)/BLOCK_GRID_CELL);\n  const y0=Math.floor((wy-reach)/BLOCK_GRID_CELL), y1=Math.floor((wy+reach)/BLOCK_GRID_CELL);\n  for(let gy=y0;gy<=y1;gy++) for(let gx=x0;gx<=x1;gx++){\n    const arr=blockerGrid.get((gx<<16)^(gy&0xffff));\n    if(!arr) continue;\n    for(const o of arr){ if(!seen.has(o)){ seen.add(o); out.push(o); } }\n  }\n  return out;\n}\nfunction canWalk(wx,wy){\n  const tx=Math.floor(wx/TILE),ty=Math.floor(wy/TILE);\n  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;\n  if(biomeMap[ty][tx]===B.WATER) return false;\n  for(const o of blockersNear(wx,wy,24)){\n    if(o.disabled) continue;\n    const dx=wx-o.x,dy=wy-o.y;\n    if(dx*dx+dy*dy<o.r*o.r) return false;\n  }\n  return true;\n}'''
+            if old in html:
+              html = html.replace(old, new, 1)
+              print('injected blockersNear')
+          Path('index.html').write_text(html, encoding='utf-8')
+          print('final', len(html))
+          PY
           touch .nojekyll
+          grep -q 'MAP_W' index.html
+
       - name: Commit to main
         run: |
           git config user.name "biome-deploy-bot"
           git config user.email "biome-deploy@users.noreply.github.com"
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "Map 2x 200x150" && git push origin HEAD:main)
+          git diff --cached --quiet || (git commit -m "Perf fixes: density, blockers grid, syntax" && git push origin HEAD:main)
+
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
