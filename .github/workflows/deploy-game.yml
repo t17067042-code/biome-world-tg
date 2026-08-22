@@ -17,36 +17,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build game with multiplayer
+      - name: Build game
         run: |
           set -eux
           curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/2adb892ce928e2cba47d134e437e369e465b27b6/index.html"
           python3 << 'PY'
           from pathlib import Path
           html = Path('index.html').read_text(encoding='utf-8')
-          mp = Path('mp.js').read_text(encoding='utf-8')
-          if 'peerjs@1.5.4' not in html:
-              html = html.replace('</head>', '<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>\n</head>', 1)
-          if '__MP_LOADED' not in html:
+          mp = Path('mp.js').read_text(encoding='utf-8') if Path('mp.js').exists() else ''
+
+          # Disable hostile enemy army waves (pink archers/warriors that attack player base)
+          html = html.replace(
+              'function updateEnemyArmyAI(dt){\n  enemyArmyTimer-=dt;',
+              'function updateEnemyArmyAI(dt){\n  return; // disabled: free enemy waves were unfightable and walked on water\n  enemyArmyTimer-=dt;',
+              1)
+          html = html.replace(
+              'function spawnEnemyWave(){\n  if(!enemyBase) return;',
+              'function spawnEnemyWave(){\n  return; // disabled\n  if(!enemyBase) return;',
+              1)
+
+          # Don't update/attack with leftover enemy military
+          html = html.replace(
+              '  updateMilitaryList(rtsUnits,dt);\n  updateMilitaryList(enemyRtsUnits,dt);\n  updateEnemyArmyAI(dt);',
+              '  updateMilitaryList(rtsUnits,dt);\n  // enemy army waves disabled — clear any leftovers\n  if(typeof enemyRtsUnits!=="undefined"){ for(const u of enemyRtsUnits){u.hp=0;} enemyRtsUnits.length=0; }\n  updateEnemyArmyAI(dt);',
+              1)
+
+          if mp and '__MP_LOADED' not in html:
+              if 'peerjs@1.5.4' not in html:
+                  html = html.replace('</head>', '<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>\n</head>', 1)
               html = html.replace('</body>', '<script>\n' + mp + '\n</script>\n</body>', 1)
+
           html = html.replace('function enemyWorkerManagerApply(){', 'function enemyWorkerManagerApply(){ if(window.MP&&window.MP.on) return;', 1)
           html = html.replace('function enemyBuildManager(dt){', 'function enemyBuildManager(dt){ if(window.MP&&window.MP.on) return;', 1)
           html = html.replace('function enemyTerritoryTick(dt){', 'function enemyTerritoryTick(dt){ if(window.MP&&window.MP.on) return;', 1)
           html = html.replace('function enemyRetarget(){', 'function enemyRetarget(){ if(window.MP&&window.MP.on) return false;', 1)
           html = html.replace('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()')
           html = html.replace('}\n}\nfunction resize()', '}\nfunction resize()')
+
           Path('index.html').write_text(html, encoding='utf-8')
-          print('ok', len(html), 'MP', '__MP_LOADED' in html)
+          print('ok', len(html), 'waves off', 'return; // disabled: free enemy waves' in html)
           PY
           touch .nojekyll
-          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const ms=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]);for(const m of ms){if(m.length>100) new Function(m);} console.log('syntax ok', ms.length);"
+          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const ms=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]);for(const m of ms){if(m.length>100)new Function(m);}console.log('syntax ok');"
 
       - name: Commit
         run: |
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
-          git add index.html .nojekyll mp.js
-          git diff --cached --quiet || (git commit -m "2P multiplayer module inlined" && git push origin HEAD:main)
+          git add index.html .nojekyll
+          git diff --cached --quiet || (git commit -m "Disable enemy army waves (pink archers)" && git push origin HEAD:main)
 
       - name: Pages
         uses: peaceiris/actions-gh-pages@v4
