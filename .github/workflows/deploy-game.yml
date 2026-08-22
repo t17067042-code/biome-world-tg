@@ -6,7 +6,6 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/deploy-game.yml'
-      - 'mp_parts/**'
 
 permissions:
   contents: write
@@ -17,19 +16,167 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assemble multiplayer game from parts
+      - name: Patch multiplayer into game
         run: |
           set -eux
-          if [ -d mp_parts ]; then
-            cat mp_parts/part*.b64 | base64 -d | gzip -dc > index.html
-            wc -c index.html
-            grep -q 'window.MP' index.html
-            grep -q 'peerjs' index.html
-            node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const m=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]).filter(s=>s.includes('function update')).sort((a,b)=>b.length-a.length)[0]; new Function(m); console.log('syntax ok');"
-          else
-            echo "no parts"
-            exit 1
-          fi
+          curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/2adb892ce928e2cba47d134e437e369e465b27b6/index.html"
+          python3 << 'PY'
+          from pathlib import Path
+          html = Path('index.html').read_text(encoding='utf-8')
+
+          if 'peerjs@1.5.4' not in html:
+              html = html.replace('</head>', '<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>\n</head>', 1)
+
+          if 'mpHostBtn' not in html:
+              html = html.replace(
+                  '''    <button class="menuBtn primary" id="newGameBtn">▶ Новая игра</button>\n    <button class="menuBtn" id="continueGameBtn">↩ Продолжить</button>''',
+                  '''    <button class="menuBtn primary" id="newGameBtn">▶ Новая игра (один)</button>\n    <button class="menuBtn" id="mpHostBtn">🤝 Мультиплеер: создать комнату</button>\n    <button class="menuBtn" id="mpJoinBtn">🔗 Мультиплеер: войти</button>\n    <div id="mpPanel" style="display:none;margin-top:10px;padding:10px;border:1px solid rgba(126,200,255,.25);border-radius:12px;text-align:left;font-size:12px;line-height:1.45">\n      <div id="mpStatus">Мультиплеер</div>\n      <div style="margin-top:6px">Код комнаты (скопируй целиком):</div>\n      <div style="word-break:break-all;font-size:11px;margin-top:4px"><b id="mpRoomCode">—</b></div>\n      <input id="mpJoinInput" placeholder="Вставь код комнаты" style="width:100%;margin-top:8px;padding:8px;border-radius:8px;border:1px solid #445;background:#0d1520;color:#e8f0ff;box-sizing:border-box">\n      <button class="menuBtn primary" id="mpJoinConfirm" style="margin-top:8px">Войти в комнату</button>\n      <div style="margin-top:8px;opacity:.75;font-size:11px">2 игрока · без ИИ · PeerJS бесплатно</div>\n    </div>\n    <button class="menuBtn" id="continueGameBtn">↩ Продолжить</button>''',
+                  1)
+
+          if 'id="mpHud"' not in html:
+              html = html.replace('</style>', '#mpHud{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:60;background:rgba(8,14,22,.88);border:1px solid rgba(126,200,255,.35);color:#cfe8ff;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;display:none;pointer-events:none}#mpHud.on{display:block}\n</style>', 1)
+              html = html.replace('<div id="loading">', '<div id="mpHud">MP</div>\n<div id="loading">', 1)
+
+          mp_js = r'''
+window.MP={on:false,role:null,peer:null,conn:null,room:null,ready:false,lastSend:0,seq:0};
+function mpHud(t){const el=document.getElementById('mpHud');if(!el)return;el.textContent=t;el.classList.add('on');}
+function mpStatus(t){const el=document.getElementById('mpStatus');if(el)el.textContent=t;mpHud(t);}
+function mpIsHost(){return window.MP.on&&window.MP.role==='host';}
+function mpIsGuest(){return window.MP.on&&window.MP.role==='guest';}
+function mpSend(obj){try{if(window.MP.conn&&window.MP.conn.open)window.MP.conn.send(obj);}catch(e){}}
+function mpCollectState(){
+  const buildings=(typeof placedBuildings!=='undefined'?placedBuildings:[]).map(b=>({id:b.id,type:b.type,x:b.x,y:b.y,state:b.state,progress:b.progress||0,hp:b.hp,maxHp:b.maxHp,side:b.side||'player',queue:b.queue||[]}));
+  const units=(typeof rtsUnits!=='undefined'?rtsUnits:[]).map(u=>({id:u.id,type:u.type,x:u.x,y:u.y,hp:u.hp,side:u.side,job:u.job,tx:u.tx,ty:u.ty,facing:u.facing}));
+  return {type:'state',seq:++window.MP.seq,stock:Object.assign({},stock),
+    player:{x:player.x,y:player.y,facing:player.facing,anim:player.anim,carry:player.carry,carryAmount:player.carryAmount,state:player.state,job:player.job},
+    enemyPeasant:{x:enemyPeasant.x,y:enemyPeasant.y,facing:enemyPeasant.facing,anim:enemyPeasant.anim,carry:enemyPeasant.carry,carryAmount:enemyPeasant.carryAmount,state:enemyPeasant.state,job:enemyPeasant.job,tx:enemyPeasant.tx,ty:enemyPeasant.ty},
+    buildings,units};
+}
+function mpApplyState(s){
+  if(!s)return;
+  if(s.stock)Object.assign(stock,s.stock);
+  if(s.player&&mpIsGuest()){player.x=s.player.x;player.y=s.player.y;player.facing=s.player.facing;player.carry=s.player.carry;player.carryAmount=s.player.carryAmount;}
+  if(s.enemyPeasant&&mpIsGuest()){enemyPeasant.x=s.enemyPeasant.x;enemyPeasant.y=s.enemyPeasant.y;enemyPeasant.facing=s.enemyPeasant.facing;enemyPeasant.carry=s.enemyPeasant.carry;enemyPeasant.carryAmount=s.enemyPeasant.carryAmount;enemyPeasant.state=s.enemyPeasant.state;enemyPeasant.job=s.enemyPeasant.job;enemyPeasant.tx=s.enemyPeasant.tx;enemyPeasant.ty=s.enemyPeasant.ty;}
+  if(Array.isArray(s.buildings)){
+    for(const nb of s.buildings){
+      let b=placedBuildings.find(x=>x.id===nb.id);
+      if(!b){b={id:nb.id,type:nb.type,x:nb.x,y:nb.y,rect:typeof buildRect==='function'?buildRect(nb.type,nb.x,nb.y):{x:nb.x-40,y:nb.y-40,w:80,h:80},state:nb.state,progress:nb.progress,hp:nb.hp,maxHp:nb.maxHp,side:nb.side,queue:nb.queue||[],workers:[]};placedBuildings.push(b);}
+      else{b.x=nb.x;b.y=nb.y;b.state=nb.state;b.progress=nb.progress;b.hp=nb.hp;b.side=nb.side;b.queue=nb.queue||[];}
+    }
+  }
+  if(Array.isArray(s.units)&&typeof rtsUnits!=='undefined'){
+    const byId=new Map(s.units.map(u=>[u.id,u]));
+    for(const u of rtsUnits){const n=byId.get(u.id);if(n){u.x=n.x;u.y=n.y;u.hp=n.hp;u.job=n.job;u.tx=n.tx;u.ty=n.ty;}}
+    for(const n of s.units){if(!rtsUnits.some(u=>u.id===n.id))rtsUnits.push({id:n.id,type:n.type,x:n.x,y:n.y,hp:n.hp,side:n.side,job:n.job||'idle',tx:n.tx,ty:n.ty,facing:n.facing||1,animT:0});}
+  }
+  if(typeof updateStockUI==='function')updateStockUI();
+}
+function mpApplyGuestCommand(cmd){
+  if(cmd.cmd==='move'){
+    if(typeof enemySetMove==='function')enemySetMove(cmd.x,cmd.y);
+    else{enemyPeasant.tx=cmd.x;enemyPeasant.ty=cmd.y;enemyPeasant.state='moving';}
+  } else if(cmd.cmd==='stop'){enemyPeasant.tx=null;enemyPeasant.ty=null;enemyPeasant.state='idle';}
+}
+function mpOnData(data){
+  if(!data||!data.type)return;
+  if(data.type==='state'&&mpIsGuest())mpApplyState(data);
+  else if(data.type==='cmd'&&mpIsHost())mpApplyGuestCommand(data);
+  else if(data.type==='hello'){mpStatus(mpIsHost()?'Игрок 2 подключился!':'Подключено');window.MP.ready=true;if(mpIsHost())mpSend({type:'hello_ack'});}
+  else if(data.type==='hello_ack'){window.MP.ready=true;mpStatus('В игре · Игрок 2 (правая база)');}
+}
+function mpWireConn(conn){
+  window.MP.conn=conn;
+  conn.on('open',()=>{mpStatus(window.MP.role==='host'?'Игрок 2 подключён':'Связь есть');window.MP.ready=true;mpSend({type:'hello',role:window.MP.role});gamePaused=false;document.getElementById('gameMenuOverlay')?.classList.remove('show');document.body.classList.remove('paused');});
+  conn.on('data',mpOnData);
+  conn.on('close',()=>{mpStatus('Связь потеряна');window.MP.ready=false;});
+  conn.on('error',e=>mpStatus('Ошибка сети'));
+}
+function mpHost(){
+  if(typeof Peer==='undefined'){alert('PeerJS не загрузился');return;}
+  window.MP.on=true;window.MP.role='host';
+  const peer=new Peer();window.MP.peer=peer;
+  peer.on('open',id=>{window.MP.room=id;const el=document.getElementById('mpRoomCode');if(el)el.textContent=id;document.getElementById('mpPanel').style.display='block';mpStatus('Комната создана. Ждём игрока 2…');});
+  peer.on('connection',c=>mpWireConn(c));
+  peer.on('error',()=>mpStatus('Peer error'));
+}
+function mpJoin(roomId){
+  if(typeof Peer==='undefined'){alert('PeerJS не загрузился');return;}
+  roomId=(roomId||'').trim();if(!roomId){alert('Введи код');return;}
+  window.MP.on=true;window.MP.role='guest';
+  const peer=new Peer();window.MP.peer=peer;
+  peer.on('open',()=>{const conn=peer.connect(roomId,{reliable:true});mpWireConn(conn);mpStatus('Подключаемся…');});
+  peer.on('error',()=>mpStatus('Не удалось подключиться'));
+}
+function mpTick(dt){
+  if(!window.MP.on||!window.MP.ready)return;
+  if(mpIsHost()){window.MP.lastSend+=dt;if(window.MP.lastSend>=0.12){window.MP.lastSend=0;mpSend(mpCollectState());}}
+}
+function mpGuestOrderMove(wx,wy){
+  if(!mpIsGuest())return false;
+  mpSend({type:'cmd',cmd:'move',x:wx,y:wy});
+  enemyPeasant.tx=wx;enemyPeasant.ty=wy;
+  return true;
+}
+function mpBindUI(){
+  const hostBtn=document.getElementById('mpHostBtn');
+  const joinBtn=document.getElementById('mpJoinBtn');
+  const joinConfirm=document.getElementById('mpJoinConfirm');
+  if(hostBtn)hostBtn.onclick=()=>{document.getElementById('mpPanel').style.display='block';mpHost();};
+  if(joinBtn)joinBtn.onclick=()=>{document.getElementById('mpPanel').style.display='block';mpStatus('Введи код комнаты хоста');};
+  if(joinConfirm)joinConfirm.onclick=()=>mpJoin(document.getElementById('mpJoinInput').value);
+}
+mpBindUI();
+'''
+
+          if 'window.MP=' not in html:
+              html = html.replace('resize();\ngenerateWorld();', mp_js + '\nresize();\ngenerateWorld();', 1)
+
+          # Branch update()
+          old = '''function update(dt){\n  if(gamePaused) return;\n  enemyTerritoryTick(dt);\n  enemyWorkerManagerTick(dt);'''
+          new = '''function update(dt){\n  if(gamePaused) return;\n  if(window.MP&&window.MP.on){\n    updateBuildings(dt);updateRTSProduction(dt);updateRTSUnits(dt);\n    updatePlayerHunter(dt);updatePlayerHunterArrows(dt);\n    player.moving=false;\n    if(mpIsGuest()){\n      if(enemyPeasant.tx!=null&&enemyPeasant.ty!=null){\n        const dx=enemyPeasant.tx-enemyPeasant.x,dy=enemyPeasant.ty-enemyPeasant.y,d=Math.hypot(dx,dy);\n        if(d>4){const sp=(enemyPeasant.speed||100)*dt;enemyPeasant.x+=dx/d*Math.min(sp,d);enemyPeasant.y+=dy/d*Math.min(sp,d);enemyPeasant.facing=dx>=0?1:-1;}\n        else{enemyPeasant.tx=null;enemyPeasant.ty=null;}\n      }\n    } else {\n      if(enemyPeasant.tx!=null&&enemyPeasant.ty!=null){\n        if(typeof enemyAdvancePath==='function') enemyAdvancePath();\n        else {\n          const dx=enemyPeasant.tx-enemyPeasant.x,dy=enemyPeasant.ty-enemyPeasant.y,d=Math.hypot(dx,dy);\n          if(d>4){const sp=(enemyPeasant.speed||100)*dt;enemyPeasant.x+=dx/d*Math.min(sp,d);enemyPeasant.y+=dy/d*Math.min(sp,d);}\n          else{enemyPeasant.tx=null;enemyPeasant.ty=null;}\n        }\n      }\n    }\n    updateAnimals(dt);\n    if(typeof mpTick==='function') mpTick(dt);\n  } else {\n  enemyTerritoryTick(dt);\n  enemyWorkerManagerTick(dt);'''
+          if old in html and 'window.MP&&window.MP.on' not in html[html.find('function update(dt)'):html.find('function update(dt)')+200]:
+              html = html.replace(old, new, 1)
+              # close else after updateAnimals in solo path - find first updateAnimals after enemy path
+              # Insert closing brace before tree shake if needed
+              marker = '''  updateEnemyExtraPeasants(dt);\n  updateAnimals(dt);\n\n  /* tree shake decay */'''
+              if marker in html:
+                  html = html.replace(marker, '''  updateEnemyExtraPeasants(dt);\n  updateAnimals(dt);\n  }\n\n  /* tree shake decay */''', 1)
+
+          # Guest onTap
+          old_tap = '''function onTap(sx,sy,forceDouble=false){\n  if(buildMode && tryPlaceBuilding(sx,sy)) return;\n  const w=S2W(sx,sy), now=performance.now();'''
+          new_tap = '''function onTap(sx,sy,forceDouble=false){\n  if(buildMode && tryPlaceBuilding(sx,sy)) return;\n  const w=S2W(sx,sy), now=performance.now();\n  if(window.MP&&window.MP.on&&window.MP.role==='guest'){\n    const clickedBuilding=hitBuilding(w.x,w.y);\n    if(clickedBuilding){selectBuildingRTS(clickedBuilding);marker.x=clickedBuilding.x;marker.y=clickedBuilding.y;marker.t=.5;return;}\n    if(typeof mpGuestOrderMove==='function')mpGuestOrderMove(w.x,w.y);\n    marker.x=w.x;marker.y=w.y;marker.t=.9;return;\n  }'''
+          if old_tap in html and "role==='guest'" not in html[html.find('function onTap'):html.find('function onTap')+500]:
+              html = html.replace(old_tap, new_tap, 1)
+
+          # Gate AI helpers
+          for fn in ['enemyWorkerManagerApply','enemyBuildManager','enemyTerritoryTick','enemyRetarget']:
+              needle = f'function {fn}('
+              if needle in html and f'function {fn}(' in html:
+                  # only first occurrence
+                  if fn=='enemyRetarget':
+                      html = html.replace('function enemyRetarget(){', 'function enemyRetarget(){ if(window.MP&&window.MP.on) return false;', 1)
+                  elif fn=='enemyWorkerManagerApply':
+                      html = html.replace('function enemyWorkerManagerApply(){', 'function enemyWorkerManagerApply(){ if(window.MP&&window.MP.on) return;', 1)
+                  elif fn=='enemyBuildManager':
+                      html = html.replace('function enemyBuildManager(dt){', 'function enemyBuildManager(dt){ if(window.MP&&window.MP.on) return;', 1)
+                  elif fn=='enemyTerritoryTick':
+                      html = html.replace('function enemyTerritoryTick(dt){', 'function enemyTerritoryTick(dt){ if(window.MP&&window.MP.on) return;', 1)
+
+          # water brace safety
+          html = html.replace('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()')
+          html = html.replace('}\n}\nfunction resize()', '}\nfunction resize()')
+
+          import re
+          scripts = re.findall(r'<script[^>]*>([\s\S]*?)</script>', html)
+          main = max(scripts, key=len)
+          d = main.count('{') - main.count('}')
+          print('depth', d)
+          if d != 0:
+              raise SystemExit('brace imbalance '+str(d))
+          Path('index.html').write_text(html, encoding='utf-8')
+          print('ok', len(html), 'has MP', 'window.MP' in html)
+          PY
+          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const m=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]).filter(s=>s.includes('function update')).sort((a,b)=>b.length-a.length)[0]; new Function(m); console.log('syntax ok');"
           touch .nojekyll
 
       - name: Commit
@@ -37,7 +184,7 @@ jobs:
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "Multiplayer 2P: PeerJS host/guest, no enemy AI" && git push origin HEAD:main)
+          git diff --cached --quiet || (git commit -m "2P multiplayer: PeerJS, no enemy AI" && git push origin HEAD:main)
 
       - name: Pages
         uses: peaceiris/actions-gh-pages@v4
