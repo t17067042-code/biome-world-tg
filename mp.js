@@ -116,9 +116,14 @@
     MP.on = true; MP.role = 'host'; disableAI();
     var peer = new Peer(); MP.peer = peer;
     peer.on('open', function (id) {
-      var el = document.getElementById('mpRoomCode'); if (el) el.textContent = id;
+      var el = document.getElementById('mpRoomCode');
+      if (el) {
+        if (el.tagName === 'INPUT') { el.value = id; el.focus(); el.select(); }
+        else el.textContent = id;
+      }
+      window.__mpRoomId = id;
       var p = document.getElementById('mpPanel'); if (p) p.style.display = 'block';
-      status('Комната создана — отправь код другу');
+      status('Комната создана — нажми «Скопировать код»');
     });
     peer.on('connection', wire);
     peer.on('error', function () { status('Ошибка PeerJS'); });
@@ -194,9 +199,11 @@
       '<button class="menuBtn" id="mpJoinBtn" type="button">🔗 Мультиплеер: войти</button>' +
       '<div id="mpPanel" style="display:none;margin-top:10px;padding:10px;border:1px solid rgba(126,200,255,.25);border-radius:12px;text-align:left;font-size:12px;line-height:1.45">' +
       '<div id="mpStatus">Мультиплеер на 2</div>' +
-      '<div style="margin-top:6px">Код (скопируй целиком):</div>' +
-      '<div style="word-break:break-all;font-size:11px;margin-top:4px"><b id="mpRoomCode">—</b></div>' +
-      '<input id="mpJoinInput" placeholder="Вставь код комнаты" style="width:100%;margin-top:8px;padding:8px;border-radius:8px;border:1px solid #445;background:#0d1520;color:#e8f0ff;box-sizing:border-box">' +
+      '<div style="margin-top:6px">Код комнаты (выдели или нажми «Скопировать»):</div>' +
+      '<input id="mpRoomCode" readonly value="—" style="width:100%;margin-top:6px;padding:10px 8px;border-radius:8px;border:1px solid #5a7a9a;background:#0a1220;color:#9fd0ff;font-size:13px;font-family:ui-monospace,monospace;box-sizing:border-box;user-select:text;-webkit-user-select:text;cursor:text">' +
+      '<button class="menuBtn primary" id="mpCopyBtn" type="button" style="margin-top:8px">📋 Скопировать код</button>' +
+      '<div style="margin-top:12px;opacity:.8">Вход для 2-го игрока:</div>' +
+      '<input id="mpJoinInput" placeholder="Вставь код комнаты" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #445;background:#0d1520;color:#e8f0ff;box-sizing:border-box">' +
       '<button class="menuBtn primary" id="mpJoinConfirm" type="button" style="margin-top:8px">Войти</button>' +
       '<div style="margin-top:8px;opacity:.75;font-size:11px">Без ИИ врагов · PeerJS · 2 игрока</div></div>';
     if (cont) menu.insertBefore(block, cont);
@@ -211,6 +218,29 @@
     };
     document.getElementById('mpJoinConfirm').onclick = function () {
       join(document.getElementById('mpJoinInput').value);
+    };
+    var copyBtn = document.getElementById('mpCopyBtn');
+    if (copyBtn) copyBtn.onclick = function () {
+      var el = document.getElementById('mpRoomCode');
+      var code = (el && (el.value || el.textContent) || window.__mpRoomId || '').trim();
+      if (!code || code === '—') { status('Сначала создай комнату'); return; }
+      function ok(){ status('Код скопирован ✓'); if (copyBtn) { copyBtn.textContent = '✓ Скопировано'; setTimeout(function(){ copyBtn.textContent = '📋 Скопировать код'; }, 1500); } }
+      function fail(){
+        if (el && el.tagName === 'INPUT') { el.focus(); el.select(); }
+        status('Зажми код и скопируй вручную');
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(ok).catch(fail);
+      } else {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = code; ta.style.position='fixed'; ta.style.left='-9999px';
+          document.body.appendChild(ta); ta.select();
+          var done = document.execCommand('copy');
+          document.body.removeChild(ta);
+          if (done) ok(); else fail();
+        } catch (e) { fail(); }
+      }
     };
   }
   var uiTimer = setInterval(function () {
