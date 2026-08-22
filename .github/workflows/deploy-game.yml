@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/deploy-game.yml'
+      - 'mp_parts/**'
 
 permissions:
   contents: write
@@ -16,131 +17,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Patch game
+      - name: Assemble multiplayer game from parts
         run: |
           set -eux
-          curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/main/index.html"
-          python3 << 'PY'
-          from pathlib import Path
-          import re
-          html = Path("index.html").read_text(encoding="utf-8")
-
-          def replace_fn(html, name, new_body):
-              i = html.find(f"function {name}")
-              if i < 0:
-                  print("missing", name)
-                  return html
-              j = html.find("\nfunction ", i+10)
-              return html[:i] + new_body + html[j:]
-
-          # Restore classic full-blocker canWalk for enemy/sheep (worked before spatial grid)
-          html = replace_fn(html, "enemyWorkerCanWalk", """function enemyWorkerCanWalk(x,y){
-            const bodyR=14;
-            const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
-            if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
-            if(biomeMap[ty][tx]===B.WATER) return false;
-            for(const o of blockers){
-              if(o.disabled) continue;
-              const rr=(o.r||0)+bodyR;
-              const dx=x-o.x,dy=y-o.y;
-              if(dx*dx+dy*dy<rr*rr) return false;
-            }
-            return true;
-          }
-          """)
-          html = replace_fn(html, "sheepCanWalk", """function sheepCanWalk(x,y){
-            const bodyR=10;
-            if(!Number.isFinite(x)||!Number.isFinite(y)) return false;
-            const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
-            if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
-            if(biomeMap[ty][tx]===B.WATER) return false;
-            for(const o of blockers){
-              if(o.disabled) continue;
-              const rr=(o.r||0)+bodyR;
-              const dx=x-o.x,dy=y-o.y;
-              if(dx*dx+dy*dy<rr*rr) return false;
-            }
-            return true;
-          }
-          """)
-          html = replace_fn(html, "enemyHunterCanWalk", """function enemyHunterCanWalk(x,y){
-            const bodyR=16;
-            const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
-            if(!Number.isFinite(x)||!Number.isFinite(y)||tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
-            if(biomeMap[ty][tx]===B.WATER) return false;
-            for(const o of blockers){
-              if(o.disabled) continue;
-              const rr=(o.r||0)+bodyR;
-              const dx=x-o.x,dy=y-o.y;
-              if(dx*dx+dy*dy<rr*rr) return false;
-            }
-            return true;
-          }
-          """)
-
-          html = html.replace("enemyPeasant._pathCooldown=.42;", "enemyPeasant._pathCooldown=.12;")
-
-          old_set = "const direct=enemyWorkerCanWalk(x,y)&&enemyWorkerSegmentClear(enemyPeasant.x,enemyPeasant.y,x,y);\n  let path=direct?[{x,y}]:findGridPath(enemyPeasant.x,enemyPeasant.y,x,y,enemyWorkerCanWalk,enemyWorkerSegmentClear);\n  if(!path||!path.length) return false;"
-          new_set = "const direct=enemyWorkerCanWalk(x,y)&&enemyWorkerSegmentClear(enemyPeasant.x,enemyPeasant.y,x,y);\n  let path=direct?[{x,y}]:findGridPath(enemyPeasant.x,enemyPeasant.y,x,y,enemyWorkerCanWalk,enemyWorkerSegmentClear);\n  if(!path||!path.length){\n    if(enemyWorkerCanWalk(x,y)) path=[{x,y}];\n    else {\n      const ang=Math.atan2(y-enemyPeasant.y,x-enemyPeasant.x);\n      for(const dist of [96,64,40,24]){\n        const nx=enemyPeasant.x+Math.cos(ang)*dist, ny=enemyPeasant.y+Math.sin(ang)*dist;\n        if(enemyWorkerCanWalk(nx,ny)){ path=[{x:nx,y:ny}]; break; }\n      }\n    }\n  }\n  if(!path||!path.length) return false;"
-          if old_set in html:
-              html = html.replace(old_set, new_set, 1)
-              print("path fallback")
-          else:
-              print("path pattern skip", "step toward goal" in html)
-
-          html = html.replace(
-              "barracks:{name:'Казарма',icon:'⚔️',texture:'barracks',w:112,h:88,cost:{wood:70,stone:50},time:11,pop:0},",
-              "barracks:{name:'Казарма',icon:'⚔️',texture:'barracks',w:168,h:132,cost:{wood:70,stone:50},time:11,pop:0},")
-          html = html.replace(
-              "archery:{name:'Лучничная',icon:'🏹',texture:'archery',w:112,h:88,",
-              "archery:{name:'Лучничная',icon:'🏹',texture:'archery',w:160,h:124,")
-
-          html = html.replace(
-              "if(wx>=r.x-10&&wx<=r.x+r.w+10&&wy>=r.y-10&&wy<=r.y+r.h+10){",
-              "if(wx>=r.x-28&&wx<=r.x+r.w+28&&wy>=r.y-28&&wy<=r.y+r.h+28){")
-
-          html = html.replace("const scale=cam.zoom*0.7", "const scale=cam.zoom*0.52")
-
-          old_btn = """  for(const [type,spec] of Object.entries(trains)){\n    const btn=document.createElement('button');\n    btn.textContent=`${spec.icon} ${spec.name} · `+Object.entries(spec.cost).map(([k,v])=>({wood:'🪵',stone:'🪨',gold:'🥇',meat:'🥩'}[k]||k)+v).join(' ');\n    btn.disabled=b.state!=='complete'||!rtsCanPay(spec.cost)||rtsPopulation()>=rtsPopCap();\n    btn.onclick=()=>queueUnit(b,type);\n    buttons.appendChild(btn);\n  }"""
-          new_btn = """  for(const [type,spec] of Object.entries(trains)){\n    const btn=document.createElement('button');\n    const costStr=Object.entries(spec.cost).map(([k,v])=>({wood:'🪵',stone:'🪨',gold:'🥇',meat:'🥩'}[k]||k)+v).join(' ');\n    btn.textContent=`Нанять ${spec.icon} ${spec.name}  (${costStr})`;\n    btn.style.cssText='font-size:14px;padding:10px 12px;margin:4px 0;width:100%;cursor:pointer';\n    btn.disabled=b.state!=='complete';\n    btn.onclick=()=>{\n      if(b.state!=='complete'){showBuildInfo('Здание ещё строится');return;}\n      if(rtsPopulation()>=rtsPopCap()){showBuildInfo('❌ Нет места — построй дом');return;}\n      if(!rtsCanPay(spec.cost)){showBuildInfo('❌ Не хватает ресурсов: '+costStr);return;}\n      queueUnit(b,type);\n      updateBuildingActions();\n    };\n    buttons.appendChild(btn);\n  }"""
-          if old_btn in html:
-              html = html.replace(old_btn, new_btn, 1)
-              print("buttons")
-          else:
-              print("buttons skip", "Нанять ${spec.icon}" in html)
-
-          old_sel = "function selectBuildingRTS(b){selectedBuilding=b;selectedRtsUnit=null;updateBuildingActions();}"
-          new_sel = """function selectBuildingRTS(b){\n  selectedBuilding=b;selectedRtsUnit=null;\n  window.__rtsUiT=1;\n  updateBuildingActions();\n  const box=document.getElementById('buildingActions');\n  if(box) box.classList.add('show');\n}"""
-          if old_sel in html:
-              html = html.replace(old_sel, new_sel, 1)
-              print("select")
-
-          html = html.replace(
-              "#buildingActions{position:fixed;left:50%;bottom:max(12px,env(safe-area-inset-bottom)+12px);transform:translateX(-50%);z-index:40;",
-              "#buildingActions{position:fixed;left:50%;bottom:max(12px,env(safe-area-inset-bottom)+12px);transform:translateX(-50%);z-index:80;")
-
-          # water brace safety
-          html = html.replace("x.putImageData(wimg,0,0);\nfunction resize()", "x.putImageData(wimg,0,0);\n}\nfunction resize()")
-          html = html.replace("}\n}\nfunction resize()", "}\nfunction resize()")
-
-          scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", html)
-          main = max(scripts, key=len)
-          d = main.count("{") - main.count("}")
-          print("depth", d)
-          if d != 0:
-              raise SystemExit("brace imbalance")
-          Path("index.html").write_text(html, encoding="utf-8")
-          print("ok", len(html))
-          PY
+          if [ -d mp_parts ]; then
+            cat mp_parts/part*.b64 | base64 -d | gzip -dc > index.html
+            wc -c index.html
+            grep -q 'window.MP' index.html
+            grep -q 'peerjs' index.html
+            node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const m=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]).filter(s=>s.includes('function update')).sort((a,b)=>b.length-a.length)[0]; new Function(m); console.log('syntax ok');"
+          else
+            echo "no parts"
+            exit 1
+          fi
           touch .nojekyll
-          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const m=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]).sort((a,b)=>b.length-a.length)[0]; new Function(m); console.log('syntax ok');"
 
       - name: Commit
         run: |
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "enemy AI + barracks train + smaller units" && git push origin HEAD:main)
+          git diff --cached --quiet || (git commit -m "Multiplayer 2P: PeerJS host/guest, no enemy AI" && git push origin HEAD:main)
 
       - name: Pages
         uses: peaceiris/actions-gh-pages@v4
