@@ -3084,21 +3084,37 @@ const BUILDING_RTS={
   storage:{capacity:150},
   farm:{foodEvery:8,food:3}
 };
+
+/* Military unit stats */
+const UNIT_STATS={
+  warrior:{name:'Воин',icon:'⚔️',hp:100,dmg:14,range:28,atkCd:0.85,speed:62,color:'#e5b84b',enemyColor:'#ff6b6b'},
+  archer:{name:'Лучник',icon:'🏹',hp:70,dmg:9,range:130,atkCd:1.15,speed:54,color:'#58a6ff',enemyColor:'#ff8a8a'}
+};
+
 let selectedBuilding=null;
-let rtsUnits=[];
+let rtsUnits=[];       // player military
+let enemyRtsUnits=[];  // enemy military
 let rtsNextId=1;
 let rtsPopBase=5;
 const RTS_BASE_CAP=200;
+let selectedRtsUnit=null;
+let enemyArmyTimer=45; // first wave after 45s
+let enemyArmyPhase=0;
+let battleBannerT=0;
+let battleBannerText='';
+let gameOverState=null; // null | 'win' | 'lose'
 
-function rtsPopulation(){return 1 + extraPeasants.length + rtsUnits.length;}
+function rtsPopulation(){
+  return 1 + extraPeasants.length + rtsUnits.filter(u=>u.hp>0).length;
+}
 function rtsPopCap(){
   let cap=rtsPopBase;
-  for(const b of placedBuildings) if(b.state==='complete'&&b.type==='house') cap+=BUILDING_RTS.house.pop;
+  for(const b of placedBuildings) if(b.state==='complete'&&b.type==='house'&&b.side!=='enemy') cap+=BUILDING_RTS.house.pop;
   return cap;
 }
 function rtsStorageCap(){
   let cap=RTS_BASE_CAP;
-  for(const b of placedBuildings) if(b.state==='complete'&&b.type==='storage') cap+=BUILDING_RTS.storage.capacity;
+  for(const b of placedBuildings) if(b.state==='complete'&&b.type==='storage'&&b.side!=='enemy') cap+=BUILDING_RTS.storage.capacity;
   return cap;
 }
 function clampStockToCapacity(){
@@ -3107,23 +3123,42 @@ function clampStockToCapacity(){
 }
 function rtsCanPay(cost){return Object.entries(cost||{}).every(([k,v])=>(stock[k]||0)>=v)}
 function rtsPay(cost){if(!rtsCanPay(cost))return false;for(const[k,v]of Object.entries(cost))stock[k]-=v;updateStockUI();return true}
-function rtsBuildingCanTrain(b,type){return b&&b.state==='complete'&&BUILDING_RTS[b.type]?.train?.[type]}
+function rtsBuildingCanTrain(b,type){return b&&b.state==='complete'&&b.side!=='enemy'&&BUILDING_RTS[b.type]?.train?.[type]}
 function queueUnit(b,type){
   const spec=rtsBuildingCanTrain(b,type);
   if(!spec){showBuildInfo('Это здание не производит такие войска');return false}
-  if(rtsPopulation()>=rtsPopCap()){showBuildInfo('❌ Нет места для населения — построй дом');return false}
+  if(rtsPopulation()>=rtsPopCap()){showBuildInfo('❌ Нет места — построй дом');return false}
   if(!rtsPay(spec.cost)){showBuildInfo('❌ Недостаточно ресурсов');return false}
   b.queue=b.queue||[];
   b.queue.push({type,progress:0,time:spec.time});
+  showBuildInfo((spec.icon||'')+' '+spec.name+' в очереди');
   updateBuildingActions();
   return true;
 }
+function makeMilitaryUnit(type,x,y,side){
+  const st=UNIT_STATS[type]||UNIT_STATS.warrior;
+  return {
+    id:(side==='enemy'?'e':'u')+(rtsNextId++),
+    type, side: side||'player',
+    x, y,
+    hp:st.hp, maxHp:st.hp,
+    dmg:st.dmg, range:st.range, atkCd:st.atkCd,
+    speed:st.speed,
+    attackTimer:0,
+    tx:null, ty:null,
+    target:null, // unit or building ref
+    job:'idle', // idle | move | attack
+    facing:1,
+    selected:false,
+    animT:0
+  };
+}
 function spawnRTSUnit(b,type){
-  const spec=BUILDING_RTS[b.type]?.train?.[type];
-  if(!spec)return;
   const a=Math.random()*Math.PI*2;
-  const u={id:'u'+(rtsNextId++),type,x:b.x+Math.cos(a)*72,y:b.y+Math.sin(a)*72,hp: type==='archer'?70:100,maxHp:type==='archer'?70:100,speed:type==='archer'?54:62,tx:null,ty:null,selected:false,facing:1};
-  rtsUnits.push(u);
+  const u=makeMilitaryUnit(type, b.x+Math.cos(a)*72, b.y+Math.sin(a)*72, b.side==='enemy'?'enemy':'player');
+  if(u.side==='enemy') enemyRtsUnits.push(u);
+  else rtsUnits.push(u);
+  showBuildInfo((UNIT_STATS[type]?.icon||'')+' '+ (UNIT_STATS[type]?.name||type)+' готов!');
 }
 function updateRTSProduction(dt){
   for(const b of placedBuildings){
@@ -3134,18 +3169,207 @@ function updateRTSProduction(dt){
       q.progress=Math.min(1,q.progress+dt/q.time);
       if(q.progress>=1){b.queue.shift();spawnRTSUnit(b,q.type)}
     }
-    if(b.type==='farm'){
+    if(b.type==='farm'&&b.side!=='enemy'){
       b.foodTimer=(b.foodTimer||0)+dt;
       if(b.foodTimer>=BUILDING_RTS.farm.foodEvery){
         const n=Math.floor(b.foodTimer/BUILDING_RTS.farm.foodEvery)*BUILDING_RTS.farm.food;
         b.foodTimer%=BUILDING_RTS.farm.foodEvery;
         stock.meat=Math.min(rtsStorageCap(),(stock.meat||0)+n);
+        updateStockUI();
       }
     }
   }
   clampStockToCapacity();
   updateBuildingActions();
   updateRTSStatus();
+}
+
+function hitRtsUnit(wx,wy,side){
+  let best=null,bd=36;
+  const list=side==='enemy'?enemyRtsUnits:rtsUnits;
+  for(const u of list){
+    if(u.hp<=0) continue;
+    const d=Math.hypot(wx-u.x,wy-u.y);
+    if(d<bd){bd=d;best=u}
+  }
+  return best;
+}
+function allCombatTargets(forSide){
+  const out=[];
+  const enemySide=forSide==='player'?'enemy':'player';
+  // enemy military
+  const elist=enemySide==='enemy'?enemyRtsUnits:rtsUnits;
+  for(const u of elist) if(u.hp>0) out.push({kind:'unit',ref:u,x:u.x,y:u.y});
+  // enemy workers / heroes as soft targets
+  if(forSide==='player'){
+    if(enemyPeasant&&!enemyPeasant.dead) out.push({kind:'worker',ref:enemyPeasant,x:enemyPeasant.x,y:enemyPeasant.y});
+    for(const w of enemyExtraPeasants||[]) if(w&&!w.dead) out.push({kind:'worker',ref:w,x:w.x,y:w.y});
+    if(enemyArcher&&enemyArcher.hp!==0) out.push({kind:'worker',ref:enemyArcher,x:enemyArcher.x,y:enemyArcher.y});
+    if(enemyBase) out.push({kind:'base',ref:enemyBase,x:enemyBase.x,y:enemyBase.y});
+  } else {
+    if(player) out.push({kind:'worker',ref:player,x:player.x,y:player.y});
+    for(const w of extraPeasants||[]) if(w) out.push({kind:'worker',ref:w,x:w.x,y:w.y});
+    if(playerHunter) out.push({kind:'worker',ref:playerHunter,x:playerHunter.x,y:playerHunter.y});
+    if(base) out.push({kind:'base',ref:base,x:base.x,y:base.y});
+  }
+  for(const b of placedBuildings){
+    if(b.state==='destroyed') continue;
+    const bSide=b.side||'player';
+    if(bSide===enemySide || (forSide==='player'&&bSide==='enemy') || (forSide==='enemy'&&bSide!=='enemy')){
+      if((forSide==='player'&&bSide==='enemy')||(forSide==='enemy'&&bSide!=='enemy'))
+        out.push({kind:'building',ref:b,x:b.x,y:b.y});
+    }
+  }
+  return out;
+}
+function nearestTarget(u){
+  const targets=allCombatTargets(u.side);
+  let best=null,bd=1e9;
+  for(const t of targets){
+    const d=Math.hypot(t.x-u.x,t.y-u.y);
+    if(d<bd){bd=d;best=t}
+  }
+  return best;
+}
+function targetAlive(t){
+  if(!t) return false;
+  if(t.kind==='unit') return t.ref&&t.ref.hp>0;
+  if(t.kind==='building') return t.ref&&t.ref.state!=='destroyed'&&(t.ref.hp||0)>0;
+  if(t.kind==='base') return t.ref&&(t.ref.hp==null||t.ref.hp>0);
+  if(t.kind==='worker') return t.ref&&!t.ref.dead;
+  return false;
+}
+function applyDamageToTarget(t,dmg,attacker){
+  if(!t||!targetAlive(t)) return;
+  if(t.kind==='unit'){
+    t.ref.hp-=dmg;
+    if(t.ref.hp<=0){t.ref.hp=0;t.ref.job='dead'}
+  } else if(t.kind==='building'){
+    t.ref.hp=(t.ref.hp||100)-dmg;
+    if(t.ref.hp<=0){t.ref.hp=0;t.ref.state='destroyed'}
+  } else if(t.kind==='base'){
+    t.ref.hp=(t.ref.hp==null?300:t.ref.hp)-dmg;
+    if(t.ref.hp<=0){
+      t.ref.hp=0;
+      if(attacker&&attacker.side==='player') setGameOver('win');
+      else setGameOver('lose');
+    }
+  } else if(t.kind==='worker'){
+    // light damage marker — workers flee conceptually
+    t.ref._hurtT=0.4;
+  }
+}
+function moveUnitToward(u,tx,ty,dt){
+  const dx=tx-u.x, dy=ty-u.y, dist=Math.hypot(dx,dy);
+  if(dist<4){u.x=tx;u.y=ty;return true}
+  const step=u.speed*dt;
+  if(step>=dist){u.x=tx;u.y=ty;return true}
+  u.x+=dx/dist*step; u.y+=dy/dist*step;
+  if(dx) u.facing=dx<0?-1:1;
+  // soft clamp to map
+  u.x=Math.max(16,Math.min(MAP_W*TILE-16,u.x));
+  u.y=Math.max(16,Math.min(MAP_H*TILE-16,u.y));
+  return false;
+}
+function updateMilitaryList(list,dt){
+  for(let i=list.length-1;i>=0;i--){
+    const u=list[i];
+    if(u.hp<=0){list.splice(i,1);continue}
+    u.animT=(u.animT||0)+dt;
+    u.attackTimer=Math.max(0,(u.attackTimer||0)-dt);
+
+    if(u.job==='move'&&u.tx!=null){
+      if(moveUnitToward(u,u.tx,u.ty,dt)){u.tx=null;u.ty=null;u.job='idle'}
+      continue;
+    }
+    if(u.job==='attack'){
+      if(!targetAlive(u.target)){
+        u.target=nearestTarget(u);
+        if(!u.target){u.job='idle';continue}
+      }
+      const t=u.target;
+      const dist=Math.hypot(t.x-u.x,t.y-u.y);
+      if(dist>u.range){
+        moveUnitToward(u,t.x,t.y,dt);
+      } else if(u.attackTimer<=0){
+        applyDamageToTarget(t,u.dmg,u);
+        u.attackTimer=u.atkCd;
+        // small shake feedback via marker occasionally
+      }
+      continue;
+    }
+    // idle: enemy auto-acquires
+    if(u.side==='enemy'&&u.job==='idle'){
+      const t=nearestTarget(u);
+      if(t&&Math.hypot(t.x-u.x,t.y-u.y)<420){
+        u.target=t;u.job='attack';
+      }
+    }
+  }
+}
+function updateRTSUnits(dt){
+  if(gameOverState) return;
+  updateMilitaryList(rtsUnits,dt);
+  updateMilitaryList(enemyRtsUnits,dt);
+  updateEnemyArmyAI(dt);
+  checkBaseHpInit();
+}
+function checkBaseHpInit(){
+  if(base&&base.hp==null){base.hp=400;base.maxHp=400}
+  if(enemyBase&&enemyBase.hp==null){enemyBase.hp=400;enemyBase.maxHp=400}
+}
+function setGameOver(state){
+  if(gameOverState) return;
+  gameOverState=state;
+  battleBannerT=8;
+  battleBannerText=state==='win'?'🏆 ПОБЕДА! Вражеская база разрушена':'💀 ПОРАЖЕНИЕ… Твоя база пала';
+  showBuildInfo(battleBannerText);
+}
+function updateEnemyArmyAI(dt){
+  enemyArmyTimer-=dt;
+  // train enemy units if they have resources and barracks-like presence
+  if(enemyArmyTimer<=0){
+    enemyArmyPhase++;
+    enemyArmyTimer=38+Math.min(40,enemyArmyPhase*4);
+    spawnEnemyWave();
+  }
+}
+function spawnEnemyWave(){
+  if(!enemyBase) return;
+  const n=Math.min(2+Math.floor(enemyArmyPhase/2),6);
+  let spawned=0;
+  // Prefer spending enemy stock
+  for(let i=0;i<n;i++){
+    const type=(i%3===0)?'archer':'warrior';
+    const cost=type==='archer'?{wood:35,meat:10,gold:10}:{wood:40,meat:20};
+    let can=true;
+    for(const[k,v] of Object.entries(cost)){ if((enemyStock[k]||0)<v) can=false; }
+    if(!can){
+      // still spawn a weaker free wave occasionally so player has content
+      if(enemyArmyPhase<=1&&i===0){ /* free first scout */ }
+      else if(spawned>0) break;
+      else { /* force one free unit early */ }
+    } else {
+      for(const[k,v] of Object.entries(cost)) enemyStock[k]-=v;
+    }
+    const a=(Math.PI*2*i)/Math.max(1,n);
+    const u=makeMilitaryUnit(type, enemyBase.x+Math.cos(a)*90, enemyBase.y+Math.sin(a)*90, 'enemy');
+    u.job='attack';
+    u.target={kind:'base',ref:base,x:base.x,y:base.y};
+    enemyRtsUnits.push(u);
+    spawned++;
+  }
+  if(spawned>0){
+    battleBannerT=3.5;
+    battleBannerText='⚔️ Враг атакует! Волна '+enemyArmyPhase;
+    showBuildInfo(battleBannerText);
+  }
+}
+function commandRtsMove(u,x,y){
+  u.tx=x;u.ty=y;u.job='move';u.target=null;
+}
+function commandRtsAttack(u,targetWrap){
+  u.target=targetWrap;u.job='attack';u.tx=null;u.ty=null;
 }
 function hitBuilding(wx,wy){
   let best=null,bd=999;
@@ -3158,7 +3382,7 @@ function hitBuilding(wx,wy){
   }
   return best;
 }
-function selectBuildingRTS(b){selectedBuilding=b;updateBuildingActions();}
+function selectBuildingRTS(b){selectedBuilding=b;selectedRtsUnit=null;updateBuildingActions();}
 function closeBuildingRTS(){selectedBuilding=null;document.getElementById('buildingActions')?.classList.remove('show')}
 function updateBuildingActions(){
   const box=document.getElementById('buildingActions'); if(!box)return;
@@ -3178,7 +3402,9 @@ function updateBuildingActions(){
     buttons.appendChild(btn);
   }
   if(!buttons.children.length){
-    const span=document.createElement('span');span.textContent=b.type==='farm'?'Производит мясо автоматически.':b.type==='storage'?'Увеличивает вместимость ресурсов.':b.type==='house'?'Увеличивает лимит населения.':'Функционал здания подключается по мере развития RTS.';span.style.fontSize='10px';span.style.color='#cbd0da';buttons.appendChild(span);
+    const span=document.createElement('span');
+    span.textContent=b.type==='farm'?'Производит мясо автоматически.':b.type==='storage'?'Увеличивает вместимость ресурсов.':b.type==='house'?'Увеличивает лимит населения.':'Здание готово.';
+    span.style.fontSize='10px';span.style.color='#cbd0da';buttons.appendChild(span);
   }
   const q=b.queue?.[0];
   document.getElementById('baQueue').textContent=q?`Очередь: ${BUILDING_RTS[b.type].train[q.type].icon} ${BUILDING_RTS[b.type].train[q.type].name} · ${Math.round(q.progress*100)}%${b.queue.length>1?' · ещё '+(b.queue.length-1):''}`:'Очередь пуста';
@@ -3188,14 +3414,77 @@ function updateRTSStatus(){
   if(p)p.textContent=`${rtsPopulation()}/${rtsPopCap()}`;
   if(c)c.textContent=rtsStorageCap();
 }
+function drawUnitHP(s,u,z){
+  const w=28*z,h=4*z;
+  const ratio=Math.max(0,u.hp/u.maxHp);
+  ctx.fillStyle='rgba(0,0,0,.55)';
+  ctx.fillRect(s.x-w/2,s.y-22*z,w,h);
+  ctx.fillStyle=ratio>0.45?'#5dffa0':(ratio>0.2?'#ffd76a':'#ff5d5d');
+  ctx.fillRect(s.x-w/2,s.y-22*z,w*ratio,h);
+}
 function drawRTSUnits(){
-  for(const u of rtsUnits){
-    const s=W2S(u.x,u.y),z=cam.zoom;
-    ctx.save();ctx.translate(s.x,s.y);
-    ctx.fillStyle='rgba(0,0,0,.25)';ctx.beginPath();ctx.ellipse(0,10*z,8*z,3*z,0,0,Math.PI*2);ctx.fill();
-    ctx.beginPath();ctx.arc(0,-3*z,9*z,0,Math.PI*2);ctx.fillStyle=u.type==='archer'?'#58a6ff':'#e5b84b';ctx.fill();
-    ctx.font=`${Math.max(12,16*z)}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#fff';ctx.fillText(u.type==='archer'?'🏹':'⚔️',0,-3*z);
+  const drawList=(list)=>{
+    for(const u of list){
+      if(u.hp<=0) continue;
+      const s=W2S(u.x,u.y),z=cam.zoom;
+      const st=UNIT_STATS[u.type]||UNIT_STATS.warrior;
+      const col=u.side==='enemy'?st.enemyColor:st.color;
+      ctx.save();
+      ctx.translate(s.x,s.y);
+      // shadow
+      ctx.fillStyle='rgba(0,0,0,.28)';
+      ctx.beginPath();ctx.ellipse(0,11*z,9*z,3.5*z,0,0,Math.PI*2);ctx.fill();
+      // body
+      const bob=Math.sin((u.animT||0)*8)*(u.job==='move'||u.job==='attack'?1.5:0.3);
+      ctx.beginPath();
+      ctx.arc(0,(-4+bob)*z,10*z,0,Math.PI*2);
+      ctx.fillStyle=col;
+      ctx.fill();
+      ctx.lineWidth=2;
+      ctx.strokeStyle=u.selected||selectedRtsUnit===u?'#fff':(u.side==='enemy'?'rgba(255,100,100,.5)':'rgba(255,255,255,.25)');
+      ctx.stroke();
+      // icon
+      ctx.font=`${Math.max(11,15*z)}px system-ui`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillStyle='#fff';
+      ctx.fillText(st.icon,0,(-4+bob)*z);
+      ctx.restore();
+      drawUnitHP(s,u,z);
+      // name
+      ctx.font='bold 9px system-ui';ctx.textAlign='center';
+      ctx.fillStyle=u.side==='enemy'?'#ff8b8b':'#ffd76a';
+      ctx.fillText(st.name,s.x,s.y-28*z);
+    }
+  };
+  drawList(enemyRtsUnits);
+  drawList(rtsUnits);
+  // battle banner
+  if(battleBannerT>0){
+    battleBannerT-=0.016;
+    const a=Math.min(1,battleBannerT);
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.fillStyle='rgba(8,12,20,.82)';
+    const tw=Math.min(window.innerWidth-24,340), th=36;
+    const bx=(window.innerWidth-tw)/2, by=72;
+    ctx.beginPath();ctx.roundRect(bx,by,tw,th,10);ctx.fill();
+    ctx.fillStyle='#ffd76a';
+    ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(battleBannerText,window.innerWidth/2,by+th/2);
     ctx.restore();
+  }
+  // base HP bars
+  if(base&&base.hp!=null){
+    const s=W2S(base.x,base.y),z=cam.zoom;
+    const w=50*z,h=5*z,ratio=Math.max(0,base.hp/(base.maxHp||400));
+    ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(s.x-w/2,s.y+18*z,w,h);
+    ctx.fillStyle='#5dffa0';ctx.fillRect(s.x-w/2,s.y+18*z,w*ratio,h);
+  }
+  if(enemyBase&&enemyBase.hp!=null){
+    const s=W2S(enemyBase.x,enemyBase.y),z=cam.zoom;
+    const w=50*z,h=5*z,ratio=Math.max(0,enemyBase.hp/(enemyBase.maxHp||400));
+    ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(s.x-w/2,s.y+18*z,w,h);
+    ctx.fillStyle='#ff6b6b';ctx.fillRect(s.x-w/2,s.y+18*z,w*ratio,h);
   }
 }
 
@@ -3209,7 +3498,7 @@ function nearestBuildSpot(type,x,y){if(validBuildSpot(type,x,y))return{x,y};for(
 function selectBuild(type){if(!BUILDINGS[type])return;if(!buildCanAfford(type)){showBuildInfo('Недостаточно ресурсов для '+BUILDINGS[type].name);return}buildMode=type;document.querySelectorAll('.buildBtn').forEach(b=>b.classList.toggle('active',b.dataset.build===type));document.getElementById('cancelBuild').classList.add('show');showBuildInfo(BUILDINGS[type].icon+' '+BUILDINGS[type].name+' — тапни по свободному месту на карте');}
 function cancelBuildMode(){buildMode=null;document.querySelectorAll('.buildBtn').forEach(b=>b.classList.remove('active'));document.getElementById('cancelBuild').classList.remove('show');document.getElementById('buildInfo').classList.remove('show')}
 function showBuildInfo(s){const e=document.getElementById('buildInfo');e.textContent=s;e.classList.add('show');if(buildMode){clearTimeout(showBuildInfo.t);showBuildInfo.t=setTimeout(()=>{if(buildMode)e.textContent=BUILDINGS[buildMode].icon+' '+BUILDINGS[buildMode].name+' — выбери место'},1800)}}
-function createBuilding(type,x,y){const d=BUILDINGS[type],b={id:Math.random().toString(36).slice(2),type,x,y,rect:buildRect(type,x,y),state:'building',progress:0,workers:[],hp:100};placedBuildings.push(b);
+function createBuilding(type,x,y){const d=BUILDINGS[type],b={id:Math.random().toString(36).slice(2),type,x,y,rect:buildRect(type,x,y),state:'building',progress:0,workers:[],hp:140,maxHp:140,side:'player',queue:[]};placedBuildings.push(b);
   // Prefer the selected worker; otherwise use the main player worker.
   const w=selectedUnit||player; if(w){b.workers.push(w);w.buildTarget=b;w.job='build';w.tx=x;w.ty=y}
   return b}
@@ -3400,6 +3689,7 @@ function update(dt){
   enemyBuildManager(dt);
   updateBuildings(dt);
   updateRTSProduction(dt);
+  updateRTSUnits(dt);
   updateEnemyHunter(dt);
   updateEnemyArrows(dt);
   updatePlayerHunter(dt);
@@ -4253,6 +4543,45 @@ function onTap(sx,sy,forceDouble=false){
   const sheep=hitSheep(w.x,w.y);
   const res=hitResource(w.x,w.y);
   const clickedBuilding=hitBuilding(w.x,w.y);
+  const clickedRts=hitRtsUnit(w.x,w.y,'player');
+  const clickedEnemyRts=hitRtsUnit(w.x,w.y,'enemy');
+
+  // Military unit selection
+  if(clickedRts){
+    if(selectedRtsUnit) selectedRtsUnit.selected=false;
+    selectedRtsUnit=clickedRts; clickedRts.selected=true;
+    selectedUnit=null; selected=false; closeBuildingRTS();
+    marker.x=clickedRts.x; marker.y=clickedRts.y; marker.t=.6;
+    const sl=document.getElementById('selLabel');
+    if(sl) sl.textContent=(UNIT_STATS[clickedRts.type]?.name||'Юнит')+' · HP '+Math.round(clickedRts.hp);
+    return;
+  }
+
+  // Selected military: attack enemy unit / building / base, or move
+  if(selectedRtsUnit && selectedRtsUnit.hp>0){
+    if(clickedEnemyRts){
+      commandRtsAttack(selectedRtsUnit,{kind:'unit',ref:clickedEnemyRts,x:clickedEnemyRts.x,y:clickedEnemyRts.y});
+      marker.x=clickedEnemyRts.x; marker.y=clickedEnemyRts.y; marker.t=.8;
+      showBuildInfo('⚔️ Атака!');
+      return;
+    }
+    if(clickedBuilding && clickedBuilding.side==='enemy'){
+      commandRtsAttack(selectedRtsUnit,{kind:'building',ref:clickedBuilding,x:clickedBuilding.x,y:clickedBuilding.y});
+      marker.x=clickedBuilding.x; marker.y=clickedBuilding.y; marker.t=.8;
+      return;
+    }
+    if(enemyBase && Math.hypot(w.x-enemyBase.x,w.y-enemyBase.y)<70){
+      commandRtsAttack(selectedRtsUnit,{kind:'base',ref:enemyBase,x:enemyBase.x,y:enemyBase.y});
+      marker.x=enemyBase.x; marker.y=enemyBase.y; marker.t=.8;
+      showBuildInfo('🏰 Атака базы!');
+      return;
+    }
+    if(canWalk(w.x,w.y)){
+      commandRtsMove(selectedRtsUnit,w.x,w.y);
+      marker.x=w.x; marker.y=w.y; marker.t=.7;
+      return;
+    }
+  }
 
   // Unit selection always has priority. Selecting a unit does not move it.
   if(clickedHunter){
@@ -4262,16 +4591,19 @@ function onTap(sx,sy,forceDouble=false){
       playerHunterSetTarget(findNearestSheep(playerHunter.x,playerHunter.y));
       marker.x=playerHunter.x; marker.y=playerHunter.y; marker.t=.9; lastTapTime=0; return;
     }
+    if(selectedRtsUnit){selectedRtsUnit.selected=false;selectedRtsUnit=null}
     selectedUnit=playerHunter; selected=true;
     marker.x=playerHunter.x; marker.y=playerHunter.y; marker.t=.6; lastTapTime=now; return;
   }
   if(clickedExtra){
+    if(selectedRtsUnit){selectedRtsUnit.selected=false;selectedRtsUnit=null}
     selectedUnit=clickedExtra; selected=true;
     lastTapTime=0;
     marker.x=clickedExtra.x; marker.y=clickedExtra.y; marker.t=.6;
     return;
   }
   if(clickedPlayer){
+    if(selectedRtsUnit){selectedRtsUnit.selected=false;selectedRtsUnit=null}
     selectedUnit=player; selected=true;
     lastTapTime=0;
     marker.x=player.x; marker.y=player.y; marker.t=.6;
