@@ -3358,7 +3358,8 @@ function updateMilitaryList(list,dt){
 function updateRTSUnits(dt){
   if(gameOverState) return;
   updateMilitaryList(rtsUnits,dt);
-  updateMilitaryList(enemyRtsUnits,dt);
+  // enemy army waves disabled — clear any leftovers
+  if(typeof enemyRtsUnits!=="undefined"){ for(const u of enemyRtsUnits){u.hp=0;} enemyRtsUnits.length=0; }
   updateEnemyArmyAI(dt);
   checkBaseHpInit();
 }
@@ -3374,6 +3375,7 @@ function setGameOver(state){
   showBuildInfo(battleBannerText);
 }
 function updateEnemyArmyAI(dt){
+  return; // disabled: free enemy waves were unfightable and walked on water
   enemyArmyTimer-=dt;
   // train enemy units if they have resources and barracks-like presence
   if(enemyArmyTimer<=0){
@@ -3383,6 +3385,7 @@ function updateEnemyArmyAI(dt){
   }
 }
 function spawnEnemyWave(){
+  return; // disabled
   if(!enemyBase) return;
   const n=Math.min(2+Math.floor(enemyArmyPhase/2),6);
   let spawned=0;
