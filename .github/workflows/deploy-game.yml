@@ -15,29 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Download game HTML
         run: |
           set -e
-          curl -fsSL --retry 5 -o index.html "https://litter.catbox.moe/4fbb02.html"
+          curl -fsSL --retry 5 -o index.html "https://litter.catbox.moe/dqlhrf.html"
           test -s index.html
-          wc -c index.html
-          grep -q 'UNIT_STATS' index.html
-          grep -q 'Biome World' index.html
+          grep -q 'MAP_W=200' index.html
           touch .nojekyll
-
       - name: Commit to main
         run: |
           git config user.name "biome-deploy-bot"
           git config user.email "biome-deploy@users.noreply.github.com"
           git add index.html .nojekyll
-          if git diff --cached --quiet; then
-            echo "No content changes"
-          else
-            git commit -m "Combat update: warriors, HP, enemy waves"
-            git push origin HEAD:main
-          fi
-
+          git diff --cached --quiet || (git commit -m "Map 2x 200x150" && git push origin HEAD:main)
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
