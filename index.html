@@ -73,7 +73,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#2a5030;font-family:
 @media(max-width:520px){#buildPanel{width:min(330px,calc(100vw - 64px));right:48px}.buildBtn{min-width:70px}#buildInfo{max-width:80vw;white-space:normal}}</style>
 
 <style id="rtsBuildingStyle">
-#buildingActions{position:fixed;left:50%;bottom:max(12px,env(safe-area-inset-bottom)+12px);transform:translateX(-50%);z-index:40;display:none;min-width:250px;max-width:min(420px,calc(100vw - 24px));box-sizing:border-box;padding:10px 12px;border:1px solid rgba(255,215,106,.28);border-radius:14px;background:rgba(8,12,20,.96);backdrop-filter:blur(10px);box-shadow:0 8px 28px rgba(0,0,0,.4);color:#fff}
+#buildingActions{position:fixed;left:50%;bottom:max(12px,env(safe-area-inset-bottom)+12px);transform:translateX(-50%);z-index:80;display:none;min-width:250px;max-width:min(420px,calc(100vw - 24px));box-sizing:border-box;padding:10px 12px;border:1px solid rgba(255,215,106,.28);border-radius:14px;background:rgba(8,12,20,.96);backdrop-filter:blur(10px);box-shadow:0 8px 28px rgba(0,0,0,.4);color:#fff}
 #buildingActions.show{display:block}
 #buildingActions .ba-head{display:flex;justify-content:space-between;gap:12px;align-items:center;font-size:12px;font-weight:800;color:#ffd76a;margin-bottom:7px}
 #buildingActions .ba-sub{font-size:10px;color:#b8bdc8;font-weight:500;margin-top:2px}
@@ -1814,7 +1814,7 @@ function enemyWorkerCanWalk(x,y){
   const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
   if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   if(biomeMap[ty][tx]===B.WATER) return false;
-  for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){
+  for(const o of blockers){
     if(o.disabled) continue;
     const rr=(o.r||0)+bodyR;
     const dx=x-o.x,dy=y-o.y;
@@ -1822,6 +1822,7 @@ function enemyWorkerCanWalk(x,y){
   }
   return true;
 }
+
 function enemyWorkerSegmentClear(x1,y1,x2,y2){
   const d=Math.hypot(x2-x1,y2-y1);
   const n=Math.max(2,Math.ceil(d/6));
@@ -1977,9 +1978,19 @@ function enemySetMove(x,y){
     enemyPeasant._path=[]; enemyPeasant.tx=null; enemyPeasant.ty=null;
   }
   if(enemyPeasant._pathCooldown>0) return false;
-  enemyPeasant._pathCooldown=.42;
+  enemyPeasant._pathCooldown=.12;
   const direct=enemyWorkerCanWalk(x,y)&&enemyWorkerSegmentClear(enemyPeasant.x,enemyPeasant.y,x,y);
   let path=direct?[{x,y}]:findGridPath(enemyPeasant.x,enemyPeasant.y,x,y,enemyWorkerCanWalk,enemyWorkerSegmentClear);
+  if(!path||!path.length){
+    if(enemyWorkerCanWalk(x,y)) path=[{x,y}];
+    else {
+      const ang=Math.atan2(y-enemyPeasant.y,x-enemyPeasant.x);
+      for(const dist of [96,64,40,24]){
+        const nx=enemyPeasant.x+Math.cos(ang)*dist, ny=enemyPeasant.y+Math.sin(ang)*dist;
+        if(enemyWorkerCanWalk(nx,ny)){ path=[{x:nx,y:ny}]; break; }
+      }
+    }
+  }
   if(!path||!path.length) return false;
   // A* grid centres can produce a first waypoint only a few pixels from the
   // current position. Remove those points, then validate the COMPLETE route
@@ -2074,7 +2085,7 @@ function enemyStartReturn(){
     // Directly request a fresh A* route to the base as a final recovery path.
     const path=findGridPath(enemyPeasant.x,enemyPeasant.y,p.x,p.y,enemyWorkerCanWalk,enemyWorkerSegmentClear);
     if(path&&path.length && enemyAssignValidatedPath(path)){
-      enemyPeasant._pathCooldown=.42;
+      enemyPeasant._pathCooldown=.12;
       return true;
     }
     enemyPeasant.state='idle';
@@ -2574,13 +2585,15 @@ function sheepCanWalk(x,y){
   const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
   if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   if(biomeMap[ty][tx]===B.WATER) return false;
-  for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){
+  for(const o of blockers){
     if(o.disabled) continue;
-    const rr=(o.r||0)+bodyR,dx=x-o.x,dy=y-o.y;
+    const rr=(o.r||0)+bodyR;
+    const dx=x-o.x,dy=y-o.y;
     if(dx*dx+dy*dy<rr*rr) return false;
   }
   return true;
 }
+
 function sheepSegmentClear(x1,y1,x2,y2){
   const d=Math.hypot(x2-x1,y2-y1),n=Math.max(2,Math.ceil(d/6));
   for(let i=1;i<=n;i++){const t=i/n;if(!sheepCanWalk(x1+(x2-x1)*t,y1+(y2-y1)*t)) return false;}
@@ -2724,13 +2737,15 @@ function enemyHunterCanWalk(x,y){
   const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
   if(!Number.isFinite(x)||!Number.isFinite(y)||tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   if(biomeMap[ty][tx]===B.WATER) return false;
-  for(const o of blockersNear(x,y,(typeof bodyR!=="undefined"?bodyR:14)+8)){
+  for(const o of blockers){
     if(o.disabled) continue;
-    const rr=(o.r||0)+bodyR,dx=x-o.x,dy=y-o.y;
+    const rr=(o.r||0)+bodyR;
+    const dx=x-o.x,dy=y-o.y;
     if(dx*dx+dy*dy<rr*rr) return false;
   }
   return true;
 }
+
 function enemyHunterSegmentClear(x1,y1,x2,y2){
   const d=Math.hypot(x2-x1,y2-y1),n=Math.max(2,Math.ceil(d/6));
   for(let i=1;i<=n;i++){const t=i/n;if(!enemyHunterCanWalk(x1+(x2-x1)*t,y1+(y2-y1)*t)) return false;}
@@ -3095,8 +3110,8 @@ function drawGrassSpots(L,R,T,Btm,z){
 // ============================================================
 const BUILDINGS={
  house:{name:'Дом',icon:'🏠',texture:'house',construction:'house',w:92,h:72,cost:{wood:40,stone:20},time:7,pop:5},
- barracks:{name:'Казарма',icon:'⚔️',texture:'barracks',w:112,h:88,cost:{wood:70,stone:50},time:11,pop:0},
- archery:{name:'Лучничная',icon:'🏹',texture:'archery',w:112,h:88,cost:{wood:60,stone:40,gold:10},time:11,pop:0},
+ barracks:{name:'Казарма',icon:'⚔️',texture:'barracks',w:168,h:132,cost:{wood:70,stone:50},time:11,pop:0},
+ archery:{name:'Лучничная',icon:'🏹',texture:'archery',w:160,h:124,cost:{wood:60,stone:40,gold:10},time:11,pop:0},
  storage:{name:'Склад',icon:'📦',texture:'storage',construction:'storage',w:104,h:80,cost:{wood:50,stone:30},time:9,pop:0},
  farm:{name:'Ферма',icon:'🌾',texture:'farm',w:120,h:92,cost:{wood:50,stone:20},time:9,pop:0}
 };
@@ -3408,13 +3423,19 @@ function hitBuilding(wx,wy){
   for(const b of placedBuildings){
     if(b.state==='destroyed')continue;
     const r=b.rect;
-    if(wx>=r.x-10&&wx<=r.x+r.w+10&&wy>=r.y-10&&wy<=r.y+r.h+10){
+    if(wx>=r.x-28&&wx<=r.x+r.w+28&&wy>=r.y-28&&wy<=r.y+r.h+28){
       const d=Math.hypot(wx-b.x,wy-b.y);if(d<bd){bd=d;best=b;}
     }
   }
   return best;
 }
-function selectBuildingRTS(b){selectedBuilding=b;selectedRtsUnit=null;updateBuildingActions();}
+function selectBuildingRTS(b){
+  selectedBuilding=b;selectedRtsUnit=null;
+  window.__rtsUiT=1;
+  updateBuildingActions();
+  const box=document.getElementById('buildingActions');
+  if(box) box.classList.add('show');
+}
 function closeBuildingRTS(){selectedBuilding=null;document.getElementById('buildingActions')?.classList.remove('show')}
 function updateBuildingActions(){
   const box=document.getElementById('buildingActions'); if(!box)return;
@@ -3428,9 +3449,17 @@ function updateBuildingActions(){
   const trains=BUILDING_RTS[b.type]?.train||{};
   for(const [type,spec] of Object.entries(trains)){
     const btn=document.createElement('button');
-    btn.textContent=`${spec.icon} ${spec.name} · `+Object.entries(spec.cost).map(([k,v])=>({wood:'🪵',stone:'🪨',gold:'🥇',meat:'🥩'}[k]||k)+v).join(' ');
-    btn.disabled=b.state!=='complete'||!rtsCanPay(spec.cost)||rtsPopulation()>=rtsPopCap();
-    btn.onclick=()=>queueUnit(b,type);
+    const costStr=Object.entries(spec.cost).map(([k,v])=>({wood:'🪵',stone:'🪨',gold:'🥇',meat:'🥩'}[k]||k)+v).join(' ');
+    btn.textContent=`Нанять ${spec.icon} ${spec.name}  (${costStr})`;
+    btn.style.cssText='font-size:14px;padding:10px 12px;margin:4px 0;width:100%;cursor:pointer';
+    btn.disabled=b.state!=='complete';
+    btn.onclick=()=>{
+      if(b.state!=='complete'){showBuildInfo('Здание ещё строится');return;}
+      if(rtsPopulation()>=rtsPopCap()){showBuildInfo('❌ Нет места — построй дом');return;}
+      if(!rtsCanPay(spec.cost)){showBuildInfo('❌ Не хватает ресурсов: '+costStr);return;}
+      queueUnit(b,type);
+      updateBuildingActions();
+    };
     buttons.appendChild(btn);
   }
   if(!buttons.children.length){
@@ -4158,7 +4187,7 @@ function drawPlayer(){
   const a=ANIM[player.anim];
   const sx=player.frame*CHAR_FW, sy=a.row*CHAR_FH;
   const s=W2S(player.x,player.y);
-  const scale=cam.zoom*0.7, dw=CHAR_FW*scale, dh=CHAR_FH*scale;
+  const scale=cam.zoom*0.52, dw=CHAR_FW*scale, dh=CHAR_FH*scale;
   ctx.save();
   ctx.translate(s.x,s.y);
   if(player.facing<0) ctx.scale(-1,1);
