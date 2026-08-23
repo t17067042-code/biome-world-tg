@@ -3363,8 +3363,11 @@ function updateMilitaryList(list,dt){
 function updateRTSUnits(dt){
   if(gameOverState) return;
   updateMilitaryList(rtsUnits,dt);
-  updateMilitaryList(enemyRtsUnits,dt);
-  updateEnemyArmyAI(dt);
+  // HARD OFF enemy military (walked on water, griefed base, unfightable)
+  if(typeof enemyRtsUnits!=="undefined"){
+    for(const u of enemyRtsUnits){u.hp=0;u.job="dead";}
+    enemyRtsUnits.length=0;
+  }
   checkBaseHpInit();
 }
 function checkBaseHpInit(){
