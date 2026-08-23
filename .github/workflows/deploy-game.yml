@@ -17,55 +17,68 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build game
+      - name: Build fixed game
         run: |
           set -eux
           curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/2adb892ce928e2cba47d134e437e369e465b27b6/index.html"
           python3 << 'PY'
           from pathlib import Path
+          import re
           html = Path('index.html').read_text(encoding='utf-8')
           mp = Path('mp.js').read_text(encoding='utf-8') if Path('mp.js').exists() else ''
 
-          # Disable hostile enemy army waves (pink archers/warriors that attack player base)
+          # --- Kill enemy military that walked on water and attacked player base ---
           html = html.replace(
-              'function updateEnemyArmyAI(dt){\n  enemyArmyTimer-=dt;',
-              'function updateEnemyArmyAI(dt){\n  return; // disabled: free enemy waves were unfightable and walked on water\n  enemyArmyTimer-=dt;',
+              '''function updateRTSUnits(dt){\n  if(gameOverState) return;\n  updateMilitaryList(rtsUnits,dt);\n  // enemy army waves disabled — clear any leftovers\n  if(typeof enemyRtsUnits!=="undefined"){ for(const u of enemyRtsUnits){u.hp=0;} enemyRtsUnits.length=0; }\n  updateEnemyArmyAI(dt);\n  checkBaseHpInit();\n}''',
+              '''function updateRTSUnits(dt){\n  if(gameOverState) return;\n  updateMilitaryList(rtsUnits,dt);\n  if(typeof enemyRtsUnits!=="undefined"){\n    for(const u of enemyRtsUnits){u.hp=0;u.job='dead';}\n    enemyRtsUnits.length=0;\n  }\n  checkBaseHpInit();\n}''',
               1)
+          html = html.replace('drawList(enemyRtsUnits);\n  drawList(rtsUnits);', 'drawList(rtsUnits);\n', 1)
           html = html.replace(
-              'function spawnEnemyWave(){\n  if(!enemyBase) return;',
-              'function spawnEnemyWave(){\n  return; // disabled\n  if(!enemyBase) return;',
-              1)
-
-          # Don't update/attack with leftover enemy military
-          html = html.replace(
-              '  updateMilitaryList(rtsUnits,dt);\n  updateMilitaryList(enemyRtsUnits,dt);\n  updateEnemyArmyAI(dt);',
-              '  updateMilitaryList(rtsUnits,dt);\n  // enemy army waves disabled — clear any leftovers\n  if(typeof enemyRtsUnits!=="undefined"){ for(const u of enemyRtsUnits){u.hp=0;} enemyRtsUnits.length=0; }\n  updateEnemyArmyAI(dt);',
+              '''    // idle: enemy auto-acquires\n    if(u.side==='enemy'&&u.job==='idle'){\n      const t=nearestTarget(u);\n      if(t&&Math.hypot(t.x-u.x,t.y-u.y)<420){\n        u.target=t;u.job='attack';\n      }\n    }''',
+              '    // enemy auto-attack disabled\n',
               1)
 
+          # Water block for military movement
+          i = html.find('function moveUnitToward')
+          if i > 0:
+              j = html.find('\nfunction ', i+10)
+              html = html[:i] + '''function moveUnitToward(u,tx,ty,dt){\n  const dx=tx-u.x, dy=ty-u.y, dist=Math.hypot(dx,dy);\n  if(dist<4){u.x=tx;u.y=ty;return true}\n  const step=u.speed*dt;\n  const nx=u.x+dx/dist*Math.min(step,dist);\n  const ny=u.y+dy/dist*Math.min(step,dist);\n  const tileWalkable=(x,y)=>{\n    const tx0=Math.floor(x/TILE), ty0=Math.floor(y/TILE);\n    if(tx0<0||ty0<0||tx0>=MAP_W||ty0>=MAP_H) return false;\n    if(biomeMap[ty0]&&biomeMap[ty0][tx0]===B.WATER) return false;\n    return true;\n  };\n  if(tileWalkable(nx,ny)){ u.x=nx; u.y=ny; }\n  else if(tileWalkable(nx,u.y)) u.x=nx;\n  else if(tileWalkable(u.x,ny)) u.y=ny;\n  else return true;\n  if(dx) u.facing=dx<0?-1:1;\n  u.x=Math.max(16,Math.min(MAP_W*TILE-16,u.x));\n  u.y=Math.max(16,Math.min(MAP_H*TILE-16,u.y));\n  return Math.hypot(tx-u.x,ty-u.y)<4;\n}\n''' + html[j:]
+
+          # MP inline
+          if 'peerjs@1.5.4' not in html:
+              html = html.replace('</head>', '<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>\n</head>', 1)
           if mp and '__MP_LOADED' not in html:
-              if 'peerjs@1.5.4' not in html:
-                  html = html.replace('</head>', '<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>\n</head>', 1)
               html = html.replace('</body>', '<script>\n' + mp + '\n</script>\n</body>', 1)
+          elif mp and '__MP_LOADED' in html:
+              # replace existing MP block
+              s = html.find('/* Biome World 2P')
+              if s > 0:
+                  a = html.rfind('<script>', 0, s)
+                  b = html.find('</script>', s)
+                  if a >= 0 and b > a:
+                      html = html[:a] + '<script>\n' + mp + '\n</script>' + html[b+9:]
 
-          html = html.replace('function enemyWorkerManagerApply(){', 'function enemyWorkerManagerApply(){ if(window.MP&&window.MP.on) return;', 1)
-          html = html.replace('function enemyBuildManager(dt){', 'function enemyBuildManager(dt){ if(window.MP&&window.MP.on) return;', 1)
-          html = html.replace('function enemyTerritoryTick(dt){', 'function enemyTerritoryTick(dt){ if(window.MP&&window.MP.on) return;', 1)
-          html = html.replace('function enemyRetarget(){', 'function enemyRetarget(){ if(window.MP&&window.MP.on) return false;', 1)
           html = html.replace('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()')
           html = html.replace('}\n}\nfunction resize()', '}\nfunction resize()')
 
+          scripts = re.findall(r'<script[^>]*>([\s\S]*?)</script>', html)
+          for sc in scripts:
+              if len(sc) > 100:
+                  d = sc.count('{') - sc.count('}')
+                  if d != 0:
+                      raise SystemExit('brace '+str(d))
           Path('index.html').write_text(html, encoding='utf-8')
-          print('ok', len(html), 'waves off', 'return; // disabled: free enemy waves' in html)
+          print('ok', len(html))
           PY
           touch .nojekyll
-          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');const ms=[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].map(x=>x[1]);for(const m of ms){if(m.length>100)new Function(m);}console.log('syntax ok');"
+          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].forEach(m=>{if(m[1].length>100) new Function(m[1]);});console.log('syntax ok');"
 
       - name: Commit
         run: |
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "Disable enemy army waves (pink archers)" && git push origin HEAD:main)
+          git diff --cached --quiet || (git commit -m "Fix: no enemy military + MP short codes" && git push origin HEAD:main)
 
       - name: Pages
         uses: peaceiris/actions-gh-pages@v4
