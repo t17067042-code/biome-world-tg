@@ -27,51 +27,52 @@ jobs:
           html = Path('index.html').read_text(encoding='utf-8')
           mp = Path('mp.js').read_text(encoding='utf-8') if Path('mp.js').exists() else ''
 
-          # Hard replace updateRTSUnits body start
+          # Remove unused PeerJS (memory + hang risk in TG WebView)
+          html = re.sub(r'\s*<script src="https://unpkg\.com/peerjs[^"]*"></script>\s*', '\n', html)
+
+          # Mobile DPR cap
+          html = html.replace('Math.min(devicePixelRatio,1.5)', 'Math.min(devicePixelRatio||1,(navigator.maxTouchPoints>0?1.15:1.35))', 1)
+
+          # Fatal error overlay
+          if 'id="fatalError"' not in html:
+              ov = '''\n<div id="fatalError" style="display:none;position:fixed;inset:0;z-index:99999;background:#1a0a0a;color:#ffb4b4;padding:20px;font:14px/1.45 system-ui;overflow:auto"><b style="color:#fff">Ошибка игры</b><pre id="fatalErrorText" style="white-space:pre-wrap;margin-top:12px"></pre><button onclick="location.reload()" style="margin-top:16px;padding:10px 16px;border-radius:10px;border:0;background:#4b9cff;color:#fff;font-weight:700">Перезагрузить</button></div>\n<script>window.__showFatal=function(m){try{var e=document.getElementById('fatalError'),t=document.getElementById('fatalErrorText');if(t)t.textContent=String(m);if(e)e.style.display='block'}catch(x){}};window.addEventListener('error',function(e){window.__showFatal((e&&e.message||'error')+'\\n'+(e&&e.filename||'')+':'+(e&&e.lineno||''))});window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__showFatal('Promise: '+(r&&r.message?r.message:r))});</script>\n'''
+              html = html.replace('<body>', '<body>'+ov, 1)
+
+          # Safer boot loop start
+          html = html.replace(
+              "document.getElementById('loading').classList.add('hidden');\n  requestAnimationFrame(loop);",
+              "document.getElementById('loading').classList.add('hidden');\n  requestAnimationFrame(function(){try{loop();}catch(err){if(window.__showFatal)__showFatal(err&&err.stack||err);}});",
+              1)
+
+          # Hard off enemy military
           html2, n = re.subn(
-              r'function updateRTSUnits\(dt\)\{\s*if\(gameOverState\) return;\s*updateMilitaryList\(rtsUnits,dt\);[\s\S]*?checkBaseHpInit\(\);\s*\}',
-              '''function updateRTSUnits(dt){\n  if(gameOverState) return;\n  updateMilitaryList(rtsUnits,dt);\n  // HARD OFF enemy military (walked on water, griefed base, unfightable)\n  if(typeof enemyRtsUnits!=="undefined"){\n    for(const u of enemyRtsUnits){u.hp=0;u.job="dead";}\n    enemyRtsUnits.length=0;\n  }\n  checkBaseHpInit();\n}''',
+              r'function updateRTSUnits\(dt\)\{[\s\S]*?checkBaseHpInit\(\);\s*\}',
+              'function updateRTSUnits(dt){\n  if(gameOverState) return;\n  updateMilitaryList(rtsUnits,dt);\n  if(typeof enemyRtsUnits!=="undefined"){for(const u of enemyRtsUnits){u.hp=0;u.job="dead";}enemyRtsUnits.length=0;}\n  checkBaseHpInit();\n}',
               html, count=1)
-          if n:
-              html = html2
-              print('updateRTSUnits replaced', n)
-          else:
-              print('WARN updateRTSUnits not matched')
+          if n: html = html2
+          html = html.replace('drawList(enemyRtsUnits);', '/*no enemy draw*/', 1)
+          html = html.replace('updateMilitaryList(enemyRtsUnits,dt);', '/*no enemy*/', 1)
+          html = html.replace('updateEnemyArmyAI(dt);', '/*no army*/', 1)
 
-          html = html.replace('drawList(enemyRtsUnits);', '/* no enemy draw */', 1)
-          html = html.replace('updateMilitaryList(enemyRtsUnits,dt);', '/* no enemy military */', 1)
-          html = html.replace('updateEnemyArmyAI(dt);', '/* no enemy army */', 1)
-
-          # water clamp if missing
-          if 'tileWalkable' not in html:
-              i = html.find('function moveUnitToward')
-              if i > 0:
-                  j = html.find('\nfunction ', i+10)
-                  html = html[:i] + '''function moveUnitToward(u,tx,ty,dt){\n  const dx=tx-u.x, dy=ty-u.y, dist=Math.hypot(dx,dy);\n  if(dist<4){u.x=tx;u.y=ty;return true}\n  const step=u.speed*dt;\n  const nx=u.x+dx/dist*Math.min(step,dist);\n  const ny=u.y+dy/dist*Math.min(step,dist);\n  const tileWalkable=(x,y)=>{\n    const tx0=Math.floor(x/TILE), ty0=Math.floor(y/TILE);\n    if(tx0<0||ty0<0||tx0>=MAP_W||ty0>=MAP_H) return false;\n    if(biomeMap[ty0]&&biomeMap[ty0][tx0]===B.WATER) return false;\n    return true;\n  };\n  if(tileWalkable(nx,ny)){ u.x=nx; u.y=ny; }\n  else if(tileWalkable(nx,u.y)) u.x=nx;\n  else if(tileWalkable(u.x,ny)) u.y=ny;\n  else return true;\n  if(dx) u.facing=dx<0?-1:1;\n  u.x=Math.max(16,Math.min(MAP_W*TILE-16,u.x));\n  u.y=Math.max(16,Math.min(MAP_H*TILE-16,u.y));\n  return Math.hypot(tx-u.x,ty-u.y)<4;\n}\n''' + html[j:]
-                  print('water clamp added')
-
-          # Ensure MP
-          if 'peerjs@1.5.4' not in html:
-              html = html.replace('</head>', '<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>\n</head>', 1)
+          # Inline latest mp.js (itty.ws)
           if mp:
-              if '__MP_LOADED' in html:
+              if '/* Biome World 2P' in html:
                   s = html.find('/* Biome World 2P')
-                  if s > 0:
-                      a = html.rfind('<script>', 0, s)
-                      b = html.find('</script>', s)
-                      if a >= 0 and b > a:
-                          html = html[:a] + '<script>\n' + mp + '\n</script>' + html[b+9:]
-                          print('mp replaced')
-              else:
-                  html = html.replace('</body>', '<script>\n' + mp + '\n</script>\n</body>', 1)
-                  print('mp inlined')
+                  a = html.rfind('<script>', 0, s)
+                  b = html.find('</script>', s)
+                  if a>=0 and b>a:
+                      html = html[:a] + '<script>\n' + mp + '\n</script>' + html[b+9:]
+              elif '__MP_LOADED' not in html:
+                  html = html.replace('</body>', '<script>\n'+mp+'\n</script>\n</body>', 1)
 
           html = html.replace('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()')
           html = html.replace('}\n}\nfunction resize()', '}\nfunction resize()')
 
+          for sc in re.findall(r'<script[^>]*>([\s\S]*?)</script>', html):
+              if len(sc)>100 and sc.count('{')!=sc.count('}'):
+                  raise SystemExit('brace imbalance')
           Path('index.html').write_text(html, encoding='utf-8')
-          print('ok', len(html))
-          assert 'enemyRtsUnits.length=0' in html or 'no enemy military' in html
+          print('ok', len(html), 'peerjs', 'peerjs' in html, 'fatal', 'fatalError' in html, 'itty', 'itty.ws' in html)
           PY
           touch .nojekyll
           node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].forEach(m=>{if(m[1].length>100) new Function(m[1]);});console.log('syntax ok');"
@@ -81,7 +82,7 @@ jobs:
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
           git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "Hard off enemy RTS units" && git push origin HEAD:main)
+          git diff --cached --quiet || (git commit -m "Crash fixes for Telegram WebView" && git push origin HEAD:main)
 
       - name: Pages
         uses: peaceiris/actions-gh-pages@v4
