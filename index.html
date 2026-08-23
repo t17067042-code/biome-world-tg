@@ -1585,7 +1585,7 @@ function enemyWorkerManagerPlan(){
   }
   return {desired,plan:economyPlan};
 }
-function enemyWorkerManagerApply(){ if(window.MP&&window.MP.on) return;
+function enemyWorkerManagerApply(){
   const workers=enemyWorkerList();
   for(const w of workers) w.aiTargetLockT=Math.max(0,(w.aiTargetLockT||0)-enemyWorkerManager.interval);
   const {desired}=enemyWorkerManagerPlan();
@@ -1624,7 +1624,7 @@ function enemyWorkerManagerTick(dt){
   enemyWorkerManagerApply();
 }
 
-function enemyBuildManager(dt){ if(window.MP&&window.MP.on) return;
+function enemyBuildManager(dt){
   enemyBuildThinkT-=dt;
   if(enemyBuildThinkT>0) return;
   enemyBuildThinkT=.55;
@@ -2060,7 +2060,7 @@ function enemyStartGather(r){
   enemyRemember(r,enemyDangerAt(r.x,r.y));
   return true;
 }
-function enemyRetarget(){ if(window.MP&&window.MP.on) return false;
+function enemyRetarget(){
   enemyPeasant.targetRes=null;
   const r=enemyChooseResource();
   if(r && enemyStartGather(r)) return true;
@@ -3311,14 +3311,24 @@ function moveUnitToward(u,tx,ty,dt){
   const dx=tx-u.x, dy=ty-u.y, dist=Math.hypot(dx,dy);
   if(dist<4){u.x=tx;u.y=ty;return true}
   const step=u.speed*dt;
-  if(step>=dist){u.x=tx;u.y=ty;return true}
-  u.x+=dx/dist*step; u.y+=dy/dist*step;
+  const nx=u.x+dx/dist*Math.min(step,dist);
+  const ny=u.y+dy/dist*Math.min(step,dist);
+  const tileWalkable=(x,y)=>{
+    const tx0=Math.floor(x/TILE), ty0=Math.floor(y/TILE);
+    if(tx0<0||ty0<0||tx0>=MAP_W||ty0>=MAP_H) return false;
+    if(biomeMap[ty0]&&biomeMap[ty0][tx0]===B.WATER) return false;
+    return true;
+  };
+  if(tileWalkable(nx,ny)){ u.x=nx; u.y=ny; }
+  else if(tileWalkable(nx,u.y)) u.x=nx;
+  else if(tileWalkable(u.x,ny)) u.y=ny;
+  else return true;
   if(dx) u.facing=dx<0?-1:1;
-  // soft clamp to map
   u.x=Math.max(16,Math.min(MAP_W*TILE-16,u.x));
   u.y=Math.max(16,Math.min(MAP_H*TILE-16,u.y));
-  return false;
+  return Math.hypot(tx-u.x,ty-u.y)<4;
 }
+
 function updateMilitaryList(list,dt){
   for(let i=list.length-1;i>=0;i--){
     const u=list[i];
@@ -3346,20 +3356,14 @@ function updateMilitaryList(list,dt){
       }
       continue;
     }
-    // idle: enemy auto-acquires
-    if(u.side==='enemy'&&u.job==='idle'){
-      const t=nearestTarget(u);
-      if(t&&Math.hypot(t.x-u.x,t.y-u.y)<420){
-        u.target=t;u.job='attack';
-      }
-    }
+    // enemy auto-attack disabled
+
   }
 }
 function updateRTSUnits(dt){
   if(gameOverState) return;
   updateMilitaryList(rtsUnits,dt);
-  // enemy army waves disabled — clear any leftovers
-  if(typeof enemyRtsUnits!=="undefined"){ for(const u of enemyRtsUnits){u.hp=0;} enemyRtsUnits.length=0; }
+  updateMilitaryList(enemyRtsUnits,dt);
   updateEnemyArmyAI(dt);
   checkBaseHpInit();
 }
@@ -3375,7 +3379,6 @@ function setGameOver(state){
   showBuildInfo(battleBannerText);
 }
 function updateEnemyArmyAI(dt){
-  return; // disabled: free enemy waves were unfightable and walked on water
   enemyArmyTimer-=dt;
   // train enemy units if they have resources and barracks-like presence
   if(enemyArmyTimer<=0){
@@ -3385,7 +3388,6 @@ function updateEnemyArmyAI(dt){
   }
 }
 function spawnEnemyWave(){
-  return; // disabled
   if(!enemyBase) return;
   const n=Math.min(2+Math.floor(enemyArmyPhase/2),6);
   let spawned=0;
@@ -3521,8 +3523,8 @@ function drawRTSUnits(){
       ctx.fillText(st.name,s.x,s.y-28*z);
     }
   };
-  drawList(enemyRtsUnits);
   drawList(rtsUnits);
+
   // battle banner
   if(battleBannerT>0){
     battleBannerT-=0.016;
@@ -3719,7 +3721,7 @@ function enemyRebuildTerritory(){
   ENEMY_TERRITORY.target=best;
   ENEMY_TERRITORY.lastTargetAt=performance.now();
 }
-function enemyTerritoryTick(dt){ if(window.MP&&window.MP.on) return;
+function enemyTerritoryTick(dt){
   ENEMY_TERRITORY.thinkT-=dt;
   ENEMY_TERRITORY.expansionCooldown=Math.max(0,ENEMY_TERRITORY.expansionCooldown-dt);
   if(ENEMY_TERRITORY.thinkT>0) return;
