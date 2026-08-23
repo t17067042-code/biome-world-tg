@@ -1,9 +1,8 @@
-/* Biome World 2P — WebSocket relay (no WebRTC/PeerJS) */
+/* Biome World 2P — itty.ws permanent free WebSocket relay */
 (function () {
   if (window.__MP_LOADED) return;
   window.__MP_LOADED = true;
-  var WS_URL = 'wss://dual-recent-rats-proper.trycloudflare.com';
-  window.MP = { on: false, role: null, ws: null, room: null, ready: false, lastSend: 0, seq: 0 };
+  window.MP = { on: false, role: null, ws: null, room: null, ready: false, lastSend: 0, seq: 0, uid: null };
 
   function hud(t) {
     var el = document.getElementById('mpHud');
@@ -23,28 +22,31 @@
   }
   function isHost() { return MP.on && MP.role === 'host'; }
   function isGuest() { return MP.on && MP.role === 'guest'; }
+
+  function shortId() {
+    var c = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    var s = 'bw';
+    for (var i = 0; i < 6; i++) s += c[(Math.random() * c.length) | 0];
+    return s;
+  }
+
   function send(o) {
-    try { if (MP.ws && MP.ws.readyState === 1) MP.ws.send(JSON.stringify(o)); } catch (e) {}
+    try {
+      if (MP.ws && MP.ws.readyState === 1) MP.ws.send(JSON.stringify(o));
+    } catch (e) {}
   }
 
   function collectState() {
     try {
-      var buildings = (window.placedBuildings || []).map(function (b) {
-        return { id: b.id, type: b.type, x: b.x, y: b.y, state: b.state, progress: b.progress || 0, hp: b.hp, maxHp: b.maxHp, side: b.side || 'player', queue: b.queue || [] };
-      });
-      var units = (window.rtsUnits || []).map(function (u) {
-        return { id: u.id, type: u.type, x: u.x, y: u.y, hp: u.hp, side: u.side, job: u.job, tx: u.tx, ty: u.ty };
-      });
       var p = window.player, e = window.enemyPeasant;
       return {
-        type: 'state', seq: ++MP.seq,
+        type: 'state', seq: ++MP.seq, role: 'host',
         stock: Object.assign({}, window.stock || {}),
-        player: p ? { x: p.x, y: p.y, facing: p.facing, carry: p.carry, carryAmount: p.carryAmount } : null,
-        enemyPeasant: e ? { x: e.x, y: e.y, facing: e.facing, carry: e.carry, carryAmount: e.carryAmount, tx: e.tx, ty: e.ty, state: e.state, job: e.job } : null,
-        buildings: buildings, units: units
+        player: p ? { x: p.x, y: p.y, facing: p.facing } : null,
+        enemyPeasant: e ? { x: e.x, y: e.y, facing: e.facing, tx: e.tx, ty: e.ty, state: e.state, job: e.job } : null
       };
     } catch (err) {
-      return { type: 'state', seq: ++MP.seq };
+      return { type: 'state', seq: ++MP.seq, role: 'host' };
     }
   }
 
@@ -58,7 +60,7 @@
       if (s.enemyPeasant && window.enemyPeasant) {
         var e = enemyPeasant, n = s.enemyPeasant;
         e.x = n.x; e.y = n.y; e.facing = n.facing; e.tx = n.tx; e.ty = n.ty;
-        e.state = n.state; e.job = n.job; e.carry = n.carry; e.carryAmount = n.carryAmount;
+        e.state = n.state; e.job = n.job;
       }
       if (typeof updateStockUI === 'function') updateStockUI();
     } catch (err) {}
@@ -92,26 +94,16 @@
     } catch (e) {}
   }
 
-  function onMsg(data) {
+  function handlePayload(data) {
     if (!data || !data.type) return;
-    if (data.type === 'created') {
-      MP.room = data.room; MP.role = 'host'; MP.on = true;
-      var el = document.getElementById('mpRoomCode');
-      if (el) {
-        if (el.tagName === 'INPUT') { el.value = data.room; el.focus(); el.select(); }
-        else el.textContent = data.room;
-      }
-      window.__mpRoomId = data.room;
-      status('Комната ' + data.room + ' — скопируй код, жди подругу');
-      disableAI();
-    } else if (data.type === 'joined') {
-      MP.room = data.room; MP.role = 'guest'; MP.on = true; MP.ready = true;
-      status('В игре · Игрок 2 (правая база)');
-      disableAI();
-      unpause();
-    } else if (data.type === 'guest_joined') {
+    if (data.type === 'hello' && data.role === 'guest' && isHost()) {
       MP.ready = true;
       status('Игрок 2 подключился ✓');
+      unpause();
+      send({ type: 'hello_ack', role: 'host' });
+    } else if (data.type === 'hello_ack' && isGuest()) {
+      MP.ready = true;
+      status('В игре · Игрок 2 (правая база)');
       unpause();
     } else if (data.type === 'state' && isGuest()) {
       applyState(data);
@@ -120,46 +112,74 @@
         if (typeof enemySetMove === 'function') enemySetMove(data.x, data.y);
         else { enemyPeasant.tx = data.x; enemyPeasant.ty = data.y; }
       }
-    } else if (data.type === 'error') {
-      status(data.message || 'Ошибка');
-    } else if (data.type === 'peer_left') {
-      MP.ready = false;
-      status('Второй игрок отключился');
     }
   }
 
-  function connect(onOpen) {
-    status('Подключение к серверу…');
+  function onRaw(ev) {
+    var raw;
+    try { raw = JSON.parse(ev.data); } catch (e) { return; }
+    if (raw.type === 'join') {
+      if (raw.self) MP.uid = raw.uid;
+      if (!raw.self && isHost() && raw.total >= 2) {
+        status('Кто-то вошёл…');
+      }
+      return;
+    }
+    if (raw.type === 'leave') {
+      if (isHost()) { MP.ready = false; status('Игрок 2 вышел'); }
+      return;
+    }
+    var payload = raw.message != null ? raw.message : raw;
+    if (raw.uid && raw.uid === MP.uid) return;
+    handlePayload(payload);
+  }
+
+  function connectChannel(room, role, onOpen) {
+    var url = 'wss://itty.ws/c/biome-' + room + '?as=' + encodeURIComponent(role);
+    status('Подключение…');
     var ws;
-    try { ws = new WebSocket(WS_URL); } catch (e) {
+    try { ws = new WebSocket(url); } catch (e) {
       status('WebSocket недоступен');
       return;
     }
     MP.ws = ws;
+    MP.room = room;
+    MP.role = role;
+    MP.on = true;
     ws.onopen = function () {
-      status('Сервер онлайн');
+      status(role === 'host' ? ('Комната ' + room + ' — скопируй код') : ('В комнате ' + room + '…'));
+      disableAI();
+      if (role === 'guest') send({ type: 'hello', role: 'guest' });
       if (onOpen) onOpen();
     };
-    ws.onmessage = function (ev) {
-      try { onMsg(JSON.parse(ev.data)); } catch (e) {}
-    };
+    ws.onmessage = onRaw;
     ws.onclose = function () {
       MP.ready = false;
-      status('Связь с сервером потеряна');
+      status('Связь потеряна — переподключение…');
+      setTimeout(function () {
+        if (MP.room && MP.role) connectChannel(MP.room, MP.role);
+      }, 2000);
     };
-    ws.onerror = function () {
-      status('Ошибка сервера MP');
-    };
+    ws.onerror = function () { status('Ошибка связи'); };
   }
 
   function host() {
-    connect(function () { send({ type: 'create' }); });
+    var room = shortId();
+    connectChannel(room, 'host', function () {
+      var el = document.getElementById('mpRoomCode');
+      if (el) {
+        if (el.tagName === 'INPUT') { el.value = room; el.focus(); el.select(); }
+        else el.textContent = room;
+      }
+      window.__mpRoomId = room;
+      status('Комната ' + room + ' — скопируй код, жди подругу');
+    });
   }
 
   function join(code) {
     code = (code || '').trim().toLowerCase().replace(/\s+/g, '');
     if (!code) { alert('Вставь код комнаты'); return; }
-    connect(function () { send({ type: 'join', room: code }); });
+    connectChannel(code, 'guest');
   }
 
   setInterval(function () {
@@ -170,10 +190,6 @@
       send(collectState());
     }
   }, 100);
-
-  setInterval(function () {
-    if (MP.ws && MP.ws.readyState === 1) send({ type: 'ping' });
-  }, 15000);
 
   function guestTap(wx, wy) {
     if (!isGuest()) return false;
@@ -223,14 +239,14 @@
       '<button class="menuBtn" id="mpHostBtn" type="button">🤝 Мультиплеер: создать комнату</button>' +
       '<button class="menuBtn" id="mpJoinBtn" type="button">🔗 Мультиплеер: войти</button>' +
       '<div id="mpPanel" style="display:none;margin-top:10px;padding:10px;border:1px solid rgba(126,200,255,.25);border-radius:12px;text-align:left;font-size:12px;line-height:1.45">' +
-      '<div id="mpStatus">Мультиплеер (WebSocket)</div>' +
+      '<div id="mpStatus">Мультиплеер · постоянный сервер</div>' +
       '<div style="margin-top:6px">Код комнаты:</div>' +
       '<input id="mpRoomCode" readonly value="—" style="width:100%;margin-top:6px;padding:10px 8px;border-radius:8px;border:1px solid #5a7a9a;background:#0a1220;color:#9fd0ff;font-size:14px;font-family:ui-monospace,monospace;box-sizing:border-box;user-select:text;-webkit-user-select:text;cursor:text">' +
       '<button class="menuBtn primary" id="mpCopyBtn" type="button" style="margin-top:8px">📋 Скопировать код</button>' +
       '<div style="margin-top:12px;opacity:.8">Вход для 2-го игрока:</div>' +
       '<input id="mpJoinInput" placeholder="Код bwxxxxxx" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #445;background:#0d1520;color:#e8f0ff;box-sizing:border-box">' +
       '<button class="menuBtn primary" id="mpJoinConfirm" type="button" style="margin-top:8px">Войти</button>' +
-      '<div style="margin-top:8px;opacity:.75;font-size:11px">Сервер WebSocket · хост ждёт с открытой игрой</div></div>';
+      '<div style="margin-top:8px;opacity:.75;font-size:11px">itty.ws · бесплатно навсегда · без своего сервера</div></div>';
     if (cont) menu.insertBefore(block, cont);
     else menu.appendChild(block);
     document.getElementById('mpHostBtn').onclick = function () {
@@ -277,5 +293,5 @@
     if (document.getElementById('mpHostBtn')) clearInterval(uiTimer);
   }, 300);
 
-  console.log('[MP] WebSocket relay', WS_URL);
+  console.log('[MP] permanent relay wss://itty.ws');
 })();
