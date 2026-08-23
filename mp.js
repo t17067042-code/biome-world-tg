@@ -2,6 +2,25 @@
 (function () {
   if (window.__MP_LOADED) return;
   window.__MP_LOADED = true;
+  // Admin analytics: game open
+  try {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var u = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || {};
+    fetch('https://biome-world-game.netlify.app/.netlify/functions/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 'game_open',
+        userId: u.id || null,
+        username: u.username || '',
+        firstName: u.first_name || '',
+        lastName: u.last_name || '',
+        source: 'game'
+      }),
+      mode: 'cors',
+      keepalive: true
+    }).catch(function(){});
+  } catch (e) {}
   window.MP = { on: false, role: null, ws: null, room: null, ready: false, lastSend: 0, seq: 0, uid: null };
 
   function hud(t) {
