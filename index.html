@@ -91,9 +91,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#2a5030;font-family:
 #settingsPanel{display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1)}#settingsPanel.show{display:block}.settingRow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0;font-size:12px}.settingRow input[type=range]{width:150px}.switch{appearance:none;width:42px;height:24px;border-radius:20px;background:#333;position:relative}.switch:after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;left:3px;top:3px;background:#aaa;transition:.15s}.switch:checked{background:#4b9cff}.switch:checked:after{left:21px;background:#fff}
 #pauseBadge{position:fixed;top:58px;left:50%;transform:translateX(-50%);z-index:44;display:none;padding:5px 10px;border-radius:9px;background:rgba(8,12,20,.8);color:#ffd76a;font-size:10px;font-weight:800;pointer-events:none}.paused #pauseBadge{display:block}
 </style>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
+<div id="fatalError" style="display:none;position:fixed;inset:0;z-index:99999;background:#1a0a0a;color:#ffb4b4;padding:20px;font:14px/1.45 system-ui;overflow:auto"><b style="color:#fff">Ошибка игры</b><pre id="fatalErrorText" style="white-space:pre-wrap;margin-top:12px"></pre><button onclick="location.reload()" style="margin-top:16px;padding:10px 16px;border-radius:10px;border:0;background:#4b9cff;color:#fff;font-weight:700">Перезагрузить</button></div>
+<script>window.__showFatal=function(m){try{var e=document.getElementById('fatalError'),t=document.getElementById('fatalErrorText');if(t)t.textContent=String(m);if(e)e.style.display='block'}catch(x){}};window.addEventListener('error',function(e){window.__showFatal((e&&e.message||'error')+'\n'+(e&&e.filename||'')+':'+(e&&e.lineno||''))});window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__showFatal('Promise: '+(r&&r.message?r.message:r))});</script>
+
 <div id="loading"><div class="spinner"></div><div>Загрузка...</div></div>
 <canvas id="game"></canvas>
 <button id="gameMenuBtn" type="button" aria-label="Меню">☰</button>
@@ -3363,11 +3365,7 @@ function updateMilitaryList(list,dt){
 function updateRTSUnits(dt){
   if(gameOverState) return;
   updateMilitaryList(rtsUnits,dt);
-  // HARD OFF enemy military (walked on water, griefed base, unfightable)
-  if(typeof enemyRtsUnits!=="undefined"){
-    for(const u of enemyRtsUnits){u.hp=0;u.job="dead";}
-    enemyRtsUnits.length=0;
-  }
+  if(typeof enemyRtsUnits!=="undefined"){for(const u of enemyRtsUnits){u.hp=0;u.job="dead";}enemyRtsUnits.length=0;}
   checkBaseHpInit();
 }
 function checkBaseHpInit(){
@@ -4183,7 +4181,7 @@ function buildWaterOverlay(){
   x.putImageData(wimg,0,0);
 }
 function resize(){
-  const dpr=Math.min(devicePixelRatio,1.5);
+  const dpr=Math.min(devicePixelRatio||1,(navigator.maxTouchPoints>0?1.15:1.35));
   canvas.width=window.innerWidth*dpr;canvas.height=window.innerHeight*dpr;
   canvas.style.width=window.innerWidth+'px';canvas.style.height=window.innerHeight+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0); mm.width=110;mm.height=82;
@@ -4899,7 +4897,7 @@ updateStockUI();
 loadImages().then(()=>{
   ready=true; cam.x=player.x; cam.y=player.y;
   document.getElementById('loading').classList.add('hidden');
-  requestAnimationFrame(loop);
+  requestAnimationFrame(function(){try{loop();}catch(err){if(window.__showFatal)__showFatal(err&&err.stack||err);}});
 });
 </script>
 
