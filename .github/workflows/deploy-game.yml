@@ -6,7 +6,6 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/deploy-game.yml'
-      - 'publish/**'
 
 permissions:
   contents: write
@@ -19,19 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch game + music
+      - name: Build full game (Netlify snapshot + mirostar)
         run: |
           set -eux
           mkdir -p publish
-          if [ -f publish/index.html ] && [ -s publish/index.html ]; then
-            echo "using committed publish/index.html"
-          else
-            curl -fsSL -o publish/index.html "https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@gh-pages/index.html" \
-              || curl -fsSL -o publish/index.html "https://litter.catbox.moe/f0dr1f.html"
-          fi
-          if [ -f publish/bg-music.mp3 ] && [ -s publish/bg-music.mp3 ]; then
-            echo "using committed music"
-          else
+          curl -fsSL -A 'Mozilla/5.0' -o publish/index.html "https://biome-world-game.netlify.app/"
+          if [ ! -s publish/bg-music.mp3 ]; then
             curl -fsSL -o publish/bg-music.mp3 "https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3" \
               || curl -fsSL -o publish/bg-music.mp3 "https://litter.catbox.moe/u4yp6k.mp3"
           fi
@@ -41,34 +33,47 @@ jobs:
           MUSIC = 'https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@gh-pages/bg-music.mp3'
           p = Path('publish/index.html')
           h = p.read_text(encoding='utf-8', errors='replace')
-          h = re.sub(
-              r'<audio[^>]*id="bgMusic"[^>]*>[\s\S]*?</audio>',
-              f'<audio id="bgMusic" preload="auto" loop playsinline>\n<source src="{MUSIC}" type="audio/mpeg">\n<source src="bg-music.mp3" type="audio/mpeg">\n</audio>',
-              h, count=1
-          )
-          h = h.replace('https://litter.catbox.moe/u4yp6k.mp3', MUSIC)
-          h = re.sub(r"const SRC = [^;]+;", f"const SRC = '{MUSIC}';", h)
-          h = h.replace("bgMusic.src=new URL('bg-music.mp3', location.href).href", f"bgMusic.src='{MUSIC}'")
-          h = h.replace("bgMusic.src='bg-music.mp3'", f"bgMusic.src='{MUSIC}'")
-          h = h.replace('function startBackgroundMusic(){\n  if(!gameAudioCtx', 'function startBackgroundMusic_SYNTH_OFF(){\n  if(!gameAudioCtx')
+          h = h.replace('function startBackgroundMusic(){', 'function startBackgroundMusic_SYNTH_OFF(){')
+          h = re.sub(r'musicEnabled\s*=\s*true', 'musicEnabled=false', h)
+          h = re.sub(r'musicTimer\s*=\s*setInterval', 'musicTimer=null; // disabled setInterval', h)
+          audio = f'''<audio id="bgMusic" preload="auto" loop playsinline>\n<source src="{MUSIC}" type="audio/mpeg">\n<source src="bg-music.mp3" type="audio/mpeg">\n</audio>
+<script>
+(function(){{
+  var SRC="{MUSIC}";
+  var a=document.getElementById("bgMusic");
+  if(!a){{
+    a=document.createElement("audio"); a.id="bgMusic"; a.loop=true; a.preload="auto";
+    document.body.appendChild(a);
+  }}
+  a.volume=0.45;
+  try{{a.src=SRC;}}catch(e){{}}
+  window.startBackgroundMusic=async function(){{
+    try{{a.muted=false;a.volume=0.45;a.src=SRC;await a.play();}}catch(e){{}}
+  }};
+  window.toggleBackgroundMusic=async function(){{
+    if(a.paused) await window.startBackgroundMusic(); else a.pause();
+  }};
+  document.addEventListener("pointerdown", function once(){{
+    window.startBackgroundMusic();
+    document.removeEventListener("pointerdown", once);
+  }}, {{passive:true}});
+  try{{ if(window.musicTimer){{clearInterval(window.musicTimer);window.musicTimer=null;}} window.musicEnabled=false; }}catch(e){{}}
+}})();
+</script>
+'''
+          if 'id="bgMusic"' in h:
+              h = re.sub(r'<audio[^>]*id="bgMusic"[^>]*>[\s\S]*?</audio>', f'<audio id="bgMusic" preload="auto" loop playsinline><source src="{MUSIC}" type="audio/mpeg"></audio>', h, count=1)
+          if '</body>' in h:
+              h = h.replace('</body>', audio + '</body>', 1)
+          else:
+              h += audio
           Path('publish/.nojekyll').write_text('')
           p.write_text(h, encoding='utf-8')
-          print('index', p.stat().st_size, 'music', Path('publish/bg-music.mp3').stat().st_size)
-          print('music url', MUSIC in h)
+          print('size', p.stat().st_size, 'music', Path('publish/bg-music.mp3').stat().st_size)
+          print('tiny', 'Tiny Swords' in h, 'synth_off', 'SYNTH_OFF' in h)
           PY
-          cp publish/index.html index.html
-          cp publish/bg-music.mp3 bg-music.mp3 || true
-          cp publish/.nojekyll .nojekyll
 
-      - name: Commit snapshot
-        run: |
-          git config user.name biome-bot
-          git config user.email biome@users.noreply.github.com
-          git add index.html bg-music.mp3 .nojekyll publish/ || true
-          git diff --cached --quiet || git commit -m "Publish game+music snapshot"
-          git push origin HEAD:main || true
-
-      - name: Publish gh-pages branch
+      - name: Publish gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -76,28 +81,10 @@ jobs:
           force_orphan: true
           enable_jekyll: false
 
-      - name: Enable GitHub Pages site
+      - name: Enable Pages API
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
-          # Create Pages site from gh-pages branch
-          curl -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
+          curl -sS -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" \
             https://api.github.com/repos/t17067042-code/biome-world-tg/pages \
-            -d '{"build_type":"legacy","source":{"branch":"gh-pages","path":"/"}}'
-          echo
-          # Or update existing
-          curl -sS -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/t17067042-code/biome-world-tg/pages \
-            -d '{"build_type":"legacy","source":{"branch":"gh-pages","path":"/"}}'
-          echo
-          curl -sS -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/t17067042-code/biome-world-tg/pages || true
-          echo
+            -d '{"build_type":"legacy","source":{"branch":"gh-pages","path":"/"}}' || true
