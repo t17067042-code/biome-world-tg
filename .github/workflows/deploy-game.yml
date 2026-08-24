@@ -6,10 +6,12 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/deploy-game.yml'
-      - 'mp.js'
+      - 'publish/**'
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   deploy:
@@ -17,77 +19,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build fixed game
+      - name: Fetch game + music
         run: |
           set -eux
-          curl -fsSL -o index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/main/index.html"
+          mkdir -p publish
+          if [ -f publish/index.html ] && [ -s publish/index.html ]; then
+            echo "using committed publish/index.html"
+          else
+            curl -fsSL -o publish/index.html "https://litter.catbox.moe/f0dr1f.html"
+          fi
+          if [ -f publish/bg-music.mp3 ] && [ -s publish/bg-music.mp3 ]; then
+            echo "using committed music"
+          else
+            curl -fsSL -o publish/bg-music.mp3 "https://litter.catbox.moe/u4yp6k.mp3"
+          fi
           python3 << 'PY'
           from pathlib import Path
           import re
-          html = Path('index.html').read_text(encoding='utf-8')
-          mp = Path('mp.js').read_text(encoding='utf-8') if Path('mp.js').exists() else ''
-
-          # Remove unused PeerJS (memory + hang risk in TG WebView)
-          html = re.sub(r'\s*<script src="https://unpkg\.com/peerjs[^"]*"></script>\s*', '\n', html)
-
-          # Mobile DPR cap
-          html = html.replace('Math.min(devicePixelRatio,1.5)', 'Math.min(devicePixelRatio||1,(navigator.maxTouchPoints>0?1.15:1.35))', 1)
-
-          # Fatal error overlay
-          if 'id="fatalError"' not in html:
-              ov = '''\n<div id="fatalError" style="display:none;position:fixed;inset:0;z-index:99999;background:#1a0a0a;color:#ffb4b4;padding:20px;font:14px/1.45 system-ui;overflow:auto"><b style="color:#fff">Ошибка игры</b><pre id="fatalErrorText" style="white-space:pre-wrap;margin-top:12px"></pre><button onclick="location.reload()" style="margin-top:16px;padding:10px 16px;border-radius:10px;border:0;background:#4b9cff;color:#fff;font-weight:700">Перезагрузить</button></div>\n<script>window.__showFatal=function(m){try{var e=document.getElementById('fatalError'),t=document.getElementById('fatalErrorText');if(t)t.textContent=String(m);if(e)e.style.display='block'}catch(x){}};window.addEventListener('error',function(e){window.__showFatal((e&&e.message||'error')+'\\n'+(e&&e.filename||'')+':'+(e&&e.lineno||''))});window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__showFatal('Promise: '+(r&&r.message?r.message:r))});</script>\n'''
-              html = html.replace('<body>', '<body>'+ov, 1)
-
-          # Safer boot loop start
-          html = html.replace(
-              "document.getElementById('loading').classList.add('hidden');\n  requestAnimationFrame(loop);",
-              "document.getElementById('loading').classList.add('hidden');\n  requestAnimationFrame(function(){try{loop();}catch(err){if(window.__showFatal)__showFatal(err&&err.stack||err);}});",
-              1)
-
-          # Hard off enemy military
-          html2, n = re.subn(
-              r'function updateRTSUnits\(dt\)\{[\s\S]*?checkBaseHpInit\(\);\s*\}',
-              'function updateRTSUnits(dt){\n  if(gameOverState) return;\n  updateMilitaryList(rtsUnits,dt);\n  if(typeof enemyRtsUnits!=="undefined"){for(const u of enemyRtsUnits){u.hp=0;u.job="dead";}enemyRtsUnits.length=0;}\n  checkBaseHpInit();\n}',
-              html, count=1)
-          if n: html = html2
-          html = html.replace('drawList(enemyRtsUnits);', '/*no enemy draw*/', 1)
-          html = html.replace('updateMilitaryList(enemyRtsUnits,dt);', '/*no enemy*/', 1)
-          html = html.replace('updateEnemyArmyAI(dt);', '/*no army*/', 1)
-
-          # Inline latest mp.js (itty.ws)
-          if mp:
-              if '/* Biome World 2P' in html:
-                  s = html.find('/* Biome World 2P')
-                  a = html.rfind('<script>', 0, s)
-                  b = html.find('</script>', s)
-                  if a>=0 and b>a:
-                      html = html[:a] + '<script>\n' + mp + '\n</script>' + html[b+9:]
-              elif '__MP_LOADED' not in html:
-                  html = html.replace('</body>', '<script>\n'+mp+'\n</script>\n</body>', 1)
-
-          html = html.replace('x.putImageData(wimg,0,0);\nfunction resize()', 'x.putImageData(wimg,0,0);\n}\nfunction resize()')
-          html = html.replace('}\n}\nfunction resize()', '}\nfunction resize()')
-
-          for sc in re.findall(r'<script[^>]*>([\s\S]*?)</script>', html):
-              if len(sc)>100 and sc.count('{')!=sc.count('}'):
-                  raise SystemExit('brace imbalance')
-          Path('index.html').write_text(html, encoding='utf-8')
-          print('ok', len(html), 'peerjs', 'peerjs' in html, 'fatal', 'fatalError' in html, 'itty', 'itty.ws' in html)
+          p = Path('publish/index.html')
+          h = p.read_text(encoding='utf-8', errors='replace')
+          h = re.sub(
+              r'<audio[^>]*id="bgMusic"[^>]*>[\s\S]*?</audio>',
+              '<audio id="bgMusic" preload="auto" loop playsinline>\n<source src="bg-music.mp3" type="audio/mpeg">\n</audio>',
+              h, count=1
+          )
+          h = h.replace("https://litter.catbox.moe/u4yp6k.mp3", "bg-music.mp3")
+          h = h.replace("bgMusic.src='bg-music.mp3'", "bgMusic.src=new URL('bg-music.mp3', location.href).href")
+          if 'const SRC' in h:
+              h = re.sub(r"const SRC = [^;]+;", "const SRC = new URL('bg-music.mp3', location.href).href;", h)
+          h = h.replace('function startBackgroundMusic(){\n  if(!gameAudioCtx', 'function startBackgroundMusic_SYNTH_OFF(){\n  if(!gameAudioCtx')
+          Path('publish/.nojekyll').write_text('')
+          p.write_text(h, encoding='utf-8')
+          print('index', p.stat().st_size, 'music', Path('publish/bg-music.mp3').stat().st_size)
+          print('has bg-music', 'bg-music.mp3' in h)
+          print('has synth', 'bass=[65.41' in h)
           PY
-          touch .nojekyll
-          node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');[...h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)].forEach(m=>{if(m[1].length>100) new Function(m[1]);});console.log('syntax ok');"
+          cp publish/index.html index.html
+          cp publish/bg-music.mp3 bg-music.mp3
+          cp publish/.nojekyll .nojekyll
 
-      - name: Commit
+      - name: Commit snapshot to main
         run: |
           git config user.name biome-bot
           git config user.email biome@users.noreply.github.com
-          git add index.html .nojekyll
-          git diff --cached --quiet || (git commit -m "Crash fixes for Telegram WebView" && git push origin HEAD:main)
+          git add index.html bg-music.mp3 .nojekyll publish/index.html publish/bg-music.mp3 publish/.nojekyll || true
+          git diff --cached --quiet || git commit -m "Publish game with mirostar music"
+          git push origin HEAD:main || true
 
-      - name: Pages
+      - name: GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
+          publish_dir: publish
           force_orphan: true
           enable_jekyll: false
