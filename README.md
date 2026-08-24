@@ -1,7 +1,7 @@
-# Biome World — Telegram Mini App
+# Biome World MVP v2.0
 
-HTML5 RTS game for Telegram.
+Telegram Mini App game replaced with BiomeWorld_MVP_v2.0.
 
-**Live:** https://t17067042-code.github.io/biome-world-tg/
+Open: https://biome-world-game.netlify.app/
 
-Bot: [@Hearthwild_bot](https://t.me/Hearthwild_bot)
+Hard-close Mini App and reopen after deploy.
