@@ -17,13 +17,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch audio
-        run: python3 scripts/patch_audio.py
+      - name: Download audio-fixed game
+        run: |
+          mkdir -p publish
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787583189.6f225543e58914df/wuw22kO33Ams/game_audio_fixed.zip"
+          unzip -o /tmp/game.zip -d /tmp/game_extract
+          cp /tmp/game_extract/game_audio_fixed.html publish/index.html
+          ls -la publish/
+          wc -c publish/index.html
+          grep -c 'playChop\|startBackgroundMusic\|bg-music' publish/index.html || true
       - name: Ensure music file
         run: |
           if [ ! -s publish/bg-music.mp3 ]; then
-            curl -fsSL -o publish/bg-music.mp3 https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3 || true
+            if [ -s bg-music.mp3 ]; then cp bg-music.mp3 publish/bg-music.mp3
+            else curl -fsSL -o publish/bg-music.mp3 https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3 || true
+            fi
           fi
+          touch publish/.nojekyll
           ls -la publish/
       - name: Publish gh-pages
         uses: peaceiris/actions-gh-pages@v4
