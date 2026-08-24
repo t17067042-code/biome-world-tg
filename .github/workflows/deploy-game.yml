@@ -10,7 +10,6 @@ on:
 permissions:
   contents: write
   pages: write
-  id-token: write
 
 jobs:
   deploy:
@@ -18,59 +17,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build full game (Netlify snapshot + mirostar)
+      - name: Build game with full audio
         run: |
           set -eux
           mkdir -p publish
-          curl -fsSL -A 'Mozilla/5.0' -o publish/index.html "https://biome-world-game.netlify.app/"
-          if [ ! -s publish/bg-music.mp3 ]; then
-            curl -fsSL -o publish/bg-music.mp3 "https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3" \
-              || curl -fsSL -o publish/bg-music.mp3 "https://litter.catbox.moe/u4yp6k.mp3"
+          curl -fsSL -A 'Mozilla/5.0' -o publish/index.html https://biome-world-game.netlify.app/
+          if [ -f bg-music.mp3 ] && [ -s bg-music.mp3 ]; then cp bg-music.mp3 publish/bg-music.mp3
+          else curl -fsSL -o publish/bg-music.mp3 https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3 || true
           fi
           python3 << 'PY'
           from pathlib import Path
           import re
-          MUSIC = 'https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@gh-pages/bg-music.mp3'
+          MUSIC = 'https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3'
           p = Path('publish/index.html')
           h = p.read_text(encoding='utf-8', errors='replace')
-          h = h.replace('function startBackgroundMusic(){', 'function startBackgroundMusic_SYNTH_OFF(){')
-          h = re.sub(r'musicEnabled\s*=\s*true', 'musicEnabled=false', h)
-          h = re.sub(r'musicTimer\s*=\s*setInterval', 'musicTimer=null; // disabled setInterval', h)
-          audio = f'''<audio id="bgMusic" preload="auto" loop playsinline>\n<source src="{MUSIC}" type="audio/mpeg">\n<source src="bg-music.mp3" type="audio/mpeg">\n</audio>
-<script>
-(function(){{
-  var SRC="{MUSIC}";
-  var a=document.getElementById("bgMusic");
-  if(!a){{
-    a=document.createElement("audio"); a.id="bgMusic"; a.loop=true; a.preload="auto";
-    document.body.appendChild(a);
-  }}
-  a.volume=0.45;
-  try{{a.src=SRC;}}catch(e){{}}
-  window.startBackgroundMusic=async function(){{
-    try{{a.muted=false;a.volume=0.45;a.src=SRC;await a.play();}}catch(e){{}}
-  }};
-  window.toggleBackgroundMusic=async function(){{
-    if(a.paused) await window.startBackgroundMusic(); else a.pause();
-  }};
-  document.addEventListener("pointerdown", function once(){{
-    window.startBackgroundMusic();
-    document.removeEventListener("pointerdown", once);
-  }}, {{passive:true}});
-  try{{ if(window.musicTimer){{clearInterval(window.musicTimer);window.musicTimer=null;}} window.musicEnabled=false; }}catch(e){{}}
-}})();
-</script>
-'''
-          if 'id="bgMusic"' in h:
-              h = re.sub(r'<audio[^>]*id="bgMusic"[^>]*>[\s\S]*?</audio>', f'<audio id="bgMusic" preload="auto" loop playsinline><source src="{MUSIC}" type="audio/mpeg"></audio>', h, count=1)
-          if '</body>' in h:
-              h = h.replace('</body>', audio + '</body>', 1)
+
+          def replace_fn(html, name, new_body):
+              m = re.search(rf'function {name}\\([^)]*\\)\\{{', html)
+              if not m:
+                  print('MISSING', name); return html
+              start = m.start(); i = html.find('{', start); depth = 0; end = i
+              for j in range(i, len(html)):
+                  if html[j] == '{': depth += 1
+                  elif html[j] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          end = j + 1; break
+              print('replaced', name, end-start)
+              return html[:start] + new_body + html[end:]
+
+          new_start = f'''function startBackgroundMusic(){{\n  if(!musicEnabled) return;\n  let a=document.getElementById('bgMusic');\n  if(!a){{\n    a=document.createElement('audio');\n    a.id='bgMusic'; a.loop=true; a.preload='auto'; a.playsInline=true;\n    a.innerHTML='<source src="{MUSIC}" type="audio/mpeg">';\n    document.body.appendChild(a);\n  }}\n  try{{\n    a.src='{MUSIC}';\n    a.volume=Math.max(0.05, Math.min(1, musicVolume||0.32));\n    a.muted=false;\n    const p=a.play(); if(p&&p.catch) p.catch(()=>{{}});\n  }}catch(e){{}}\n}}'''
+
+          new_stop = '''function stopBackgroundMusic(){\n  if(musicTimer){clearInterval(musicTimer);musicTimer=null}\n  if(musicGain){try{musicGain.disconnect()}catch(e){}musicGain=null}\n  const a=document.getElementById('bgMusic');\n  if(a){try{a.pause()}catch(e){}}\n}'''
+
+          new_update = '''function updateAudioSettings(){\n  if(musicGain)musicGain.gain.value=musicEnabled?musicVolume:0;\n  const a=document.getElementById('bgMusic');\n  if(a){\n    a.volume=Math.max(0.05, Math.min(1, musicVolume||0.32));\n    if(!musicEnabled){try{a.pause()}catch(e){}}\n    else if(a.paused){try{a.play().catch(()=>{})}catch(e){}}\n  }\n}'''
+
+          h = replace_fn(h, 'startBackgroundMusic', new_start)
+          h = replace_fn(h, 'stopBackgroundMusic', new_stop)
+          h = replace_fn(h, 'updateAudioSettings', new_update)
+
+          if 'id="bgMusic"' not in h:
+              tag = f'<audio id="bgMusic" preload="auto" loop playsinline><source src="{MUSIC}" type="audio/mpeg"></audio>\n'
+              h = h.replace('<body>', '<body>'+tag, 1) if '<body>' in h else tag+h
           else:
-              h += audio
+              h = re.sub(r'<audio[^>]*id="bgMusic"[^>]*>[\\s\\S]*?</audio>',
+                         f'<audio id="bgMusic" preload="auto" loop playsinline><source src="{MUSIC}" type="audio/mpeg"></audio>', h, count=1)
+
+          wire = '''<script>document.addEventListener('pointerdown',function(){try{if(typeof unlockGameAudio==='function')unlockGameAudio()}catch(e){}},{passive:true,once:true});</script>'''
+          if '</body>' in h: h = h.replace('</body>', wire+'</body>', 1)
+          else: h += wire
+
           Path('publish/.nojekyll').write_text('')
           p.write_text(h, encoding='utf-8')
-          print('size', p.stat().st_size, 'music', Path('publish/bg-music.mp3').stat().st_size)
-          print('tiny', 'Tiny Swords' in h, 'synth_off', 'SYNTH_OFF' in h)
+          assert 'function audioTone' in h and 'function playChop' in h
+          assert 'function playFootstep' in h and MUSIC in h
+          print('OK tiny', 'Tiny Swords' in h, 'size', p.stat().st_size)
           PY
 
       - name: Publish gh-pages
@@ -80,11 +81,3 @@ jobs:
           publish_dir: publish
           force_orphan: true
           enable_jekyll: false
-
-      - name: Enable Pages API
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          curl -sS -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/t17067042-code/biome-world-tg/pages \
-            -d '{"build_type":"legacy","source":{"branch":"gh-pages","path":"/"}}' || true
