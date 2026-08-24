@@ -17,15 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download audio-fixed game
+      - name: Download fixed game (shake + music)
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787583189.6f225543e58914df/wuw22kO33Ams/game_audio_fixed.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787583782.ee07217cbb2a8d26/wrw821OhCtK4/game_shake_music.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
-          cp /tmp/game_extract/game_audio_fixed.html publish/index.html
+          # find the html regardless of name
+          HTML=$(find /tmp/game_extract -name '*.html' | head -1)
+          cp "$HTML" publish/index.html
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'playChop\|startBackgroundMusic\|bg-music' publish/index.html || true
+          grep -c 'shakeTreeDecor\|startBackgroundMusic\|bg-music' publish/index.html || true
       - name: Ensure music file
         run: |
           if [ ! -s publish/bg-music.mp3 ]; then
