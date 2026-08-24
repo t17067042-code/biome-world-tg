@@ -89,6 +89,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#2a5030;font-family:
 <div id="loading"><div class="spinner"></div><div>Загрузка...</div></div>
 <button id="musicToggle" type="button" aria-label="Музыка">♫ Музыка: выкл.</button>
 <audio id="bgMusic" preload="auto" loop playsinline>
+<source src="https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@gh-pages/bg-music.mp3" type="audio/mpeg">
 <source src="bg-music.mp3" type="audio/mpeg">
 </audio>
 
@@ -4388,7 +4389,7 @@ window.playGameSfx=playGameSfx;
 
 <script>
 (function(){
-  const SRC = new URL('bg-music.mp3', location.href).href;
+  const SRC = 'https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@gh-pages/bg-music.mp3';
   const a = document.getElementById('bgMusic');
   if (!a) return;
   a.loop = true;
