@@ -6,38 +6,46 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/deploy-game.yml'
-      - 'scripts/patch_audio.py'
+      - 'scripts/**'
+      - 'publish/**'
 
 permissions:
   contents: write
   pages: write
+  id-token: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download fixed game (shake + music)
+
+      - name: Prepare publish folder
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787583782.ee07217cbb2a8d26/wrw821OhCtK4/game_shake_music.zip"
-          unzip -o /tmp/game.zip -d /tmp/game_extract
-          # find the html regardless of name
-          HTML=$(find /tmp/game_extract -name '*.html' | head -1)
-          cp "$HTML" publish/index.html
-          ls -la publish/
-          wc -c publish/index.html
-          grep -c 'shakeTreeDecor\|startBackgroundMusic\|bg-music' publish/index.html || true
-      - name: Ensure music file
-        run: |
-          if [ ! -s publish/bg-music.mp3 ]; then
-            if [ -s bg-music.mp3 ]; then cp bg-music.mp3 publish/bg-music.mp3
-            else curl -fsSL -o publish/bg-music.mp3 https://cdn.jsdelivr.net/gh/t17067042-code/biome-world-tg@main/bg-music.mp3 || true
-            fi
+          # Prefer already-published content on gh-pages if present in repo history,
+          # otherwise fetch last good build from branch via raw.
+          if [ -f publish/index.html ] && [ -s publish/index.html ]; then
+            echo "using existing publish/index.html"
+          else
+            curl -fsSL -o publish/index.html "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/gh-pages/index.html" || true
+          fi
+          if [ ! -s publish/index.html ]; then
+            curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787583782.ee07217cbb2a8d26/wrw821OhCtK4/game_shake_music.zip" || true
+            unzip -o /tmp/game.zip -d /tmp/game_extract || true
+            HTML=$(find /tmp/game_extract -name '*.html' 2>/dev/null | head -1)
+            if [ -n "$HTML" ]; then cp "$HTML" publish/index.html; fi
+          fi
+          if [ -s bg-music.mp3 ]; then cp bg-music.mp3 publish/bg-music.mp3
+          elif [ ! -s publish/bg-music.mp3 ]; then
+            curl -fsSL -o publish/bg-music.mp3 "https://raw.githubusercontent.com/t17067042-code/biome-world-tg/main/bg-music.mp3" || true
           fi
           touch publish/.nojekyll
           ls -la publish/
-      - name: Publish gh-pages
+          wc -c publish/index.html || true
+          grep -c 'shakeTreeDecor\|startBackgroundMusic\|bg-music' publish/index.html || true
+
+      - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
