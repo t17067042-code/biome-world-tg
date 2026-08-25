@@ -23,7 +23,7 @@ jobs:
       - name: Download build
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787668368.777e72328549d02e/wlw5GEfiFkp4/game_raid.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787671206.1d86c8983de6122b/wXwqGul4vNHZ/game_train.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'updateEnemyArmy\|updatePlayerArrows\|saveGameSilent' publish/index.html || true
+          grep -c 'Own building first\|__ptrs\|pinchStartDist' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
