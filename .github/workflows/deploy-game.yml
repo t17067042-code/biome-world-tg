@@ -20,10 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download build (building fixes)
+      - name: Download build (combat + winlose)
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787661462.004358164febd390/wKw4GQAU0ywO/game_buildfix.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787662883.1797d0ba249f8f84/wBw7GmAJBWPc/game_fix_all.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'Local progression from completed\|buildingImages.tower\|helpers>=2\|openMainMenu' publish/index.html || true
+          grep -c 'updateRTSUnits\|endGame\|hitRTSUnit\|gamePaused' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
