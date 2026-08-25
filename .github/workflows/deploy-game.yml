@@ -23,7 +23,7 @@ jobs:
       - name: Download build
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787671530.7c79d5f866fad16e/wpwuGAls9iE5/game_mobile.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787671755.a786e19025611f4e/wlwRGJlFImVG/game_responsive.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'zoomBtns\|__ptrs\|ba-close' publish/index.html || true
+          grep -c 'Responsive fluid UI\|--fs-sm\|viewport-fit' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
