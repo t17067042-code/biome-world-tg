@@ -23,7 +23,7 @@ jobs:
       - name: Download build
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787674460.36c11bb831505a70/wdweGWgK1xJU/game_collapse.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787674777.bd155cf148ba6c06/wVwgGCgdR9nT/game_mosaic.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'collapseBuildDrawer\|showFloatingCancel' publish/index.html || true
+          grep -c 'snapWallMosaic\|lastWallAnchor' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
