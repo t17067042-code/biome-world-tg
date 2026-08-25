@@ -23,7 +23,7 @@ jobs:
       - name: Download build
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787663625.0f9d19692b87d6b3/wEwNGveTg6Pq/game_slow.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787666524.28d5b6465a99d779/wcwBGZfB6WmI/game_bugs.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'RTS_BASE_CAP=2000\|speed:95\|wood:1000' publish/index.html || true
+          grep -c 'manualMove\|isPeasantWorker\|__enemyBuildSeen\|VS ИИ' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
