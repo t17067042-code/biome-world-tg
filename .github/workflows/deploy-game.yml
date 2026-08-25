@@ -23,7 +23,7 @@ jobs:
       - name: Download build
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787673975.cbf0c6a74706a458/wPweGvgC00yM/game_walls.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787674317.31155d5e8b6ab094/wSwrG9gXvida/game_walls2.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'wall:{name\|wall_gate\|wallDamageImg' publish/index.html || true
+          grep -c 'pickWallVariant\|w_v1\|wall_gate_bn\|corner' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
