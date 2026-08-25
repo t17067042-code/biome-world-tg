@@ -23,7 +23,7 @@ jobs:
       - name: Download build
         run: |
           mkdir -p publish
-          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787667631.40d3017d11ada23a/wkwnGGfla3fn/game_units.zip"
+          curl -fsSL -o /tmp/game.zip "https://tmpfiles.org/dl/1787668368.777e72328549d02e/wlw5GEfiFkp4/game_raid.zip"
           unzip -o /tmp/game.zip -d /tmp/game_extract
           HTML=$(find /tmp/game_extract -name '*.html' | head -1)
           cp "$HTML" publish/index.html
@@ -33,7 +33,7 @@ jobs:
           touch publish/.nojekyll
           ls -la publish/
           wc -c publish/index.html
-          grep -c 'monastery\|knight\|Наём юнитов' publish/index.html || true
+          grep -c 'updateEnemyArmy\|updatePlayerArrows\|saveGameSilent' publish/index.html || true
 
       - name: Publish to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
